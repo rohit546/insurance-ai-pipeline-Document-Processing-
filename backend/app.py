@@ -32,7 +32,7 @@ app.add_middleware(
 )
 
 client = storage.Client()
-bucket_name = 'deployment'
+bucket_name = os.getenv('BUCKET_NAME', 'deployment')
 bucket = client.get_bucket(bucket_name)
 
 @app.get("/")

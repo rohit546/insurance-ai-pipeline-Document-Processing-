@@ -14,7 +14,7 @@ if google_cloud_credentials:
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = google_cloud_credentials
 
 client = storage.Client()
-bucket = client.get_bucket('deployment')
+bucket = client.get_bucket(os.getenv('BUCKET_NAME', 'deployment'))
 
 USERS_FILE = 'metadata/users.json'
 

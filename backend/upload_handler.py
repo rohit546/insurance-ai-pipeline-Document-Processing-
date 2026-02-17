@@ -17,7 +17,7 @@ if google_cloud_credentials:
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = google_cloud_credentials
 
 client = storage.Client()
-BUCKET_NAME = 'deployment'
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'deployment')
 PDF_FOLDER = 'pdf'
 METADATA_FILE = f'{PDF_FOLDER}/uploads_metadata.json'
 

@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 from google.cloud import storage
 
-BUCKET_NAME = 'deployment'
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'deployment')
 PDF_FOLDER = 'pdf'
 METADATA_FILE = f'{PDF_FOLDER}/uploads_metadata.json'
 

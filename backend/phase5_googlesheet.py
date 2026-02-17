@@ -16,7 +16,7 @@ from pathlib import Path
 
 load_dotenv()
 
-BUCKET_NAME = 'deployment'
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'deployment')
 
 
 def _get_bucket() -> storage.bucket.Bucket:
