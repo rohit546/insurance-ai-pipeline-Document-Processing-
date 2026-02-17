@@ -15,15 +15,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code to root of /app (not /app/backend/)
 COPY backend/ .
 
-# Copy credentials
-COPY credentials/ ./credentials/
+# Copy startup script
+COPY start.sh .
+RUN chmod +x start.sh
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
-ENV GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/insurance-sheets-474717-7fc3fd9736bc.json
 
 EXPOSE 8000
 
-# Start FastAPI (app.py is now at /app/app.py)
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start via startup script (handles credential decoding + server start)
+CMD ["./start.sh"]
