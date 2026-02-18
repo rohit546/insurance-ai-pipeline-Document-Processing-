@@ -14,7 +14,7 @@ from PIL import Image
 import io
 from google.cloud import storage
 
-BUCKET_NAME = 'deployment'
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 PDF_FOLDER = 'pdf'
 METADATA_FILE = f'{PDF_FOLDER}/uploads_metadata.json'
 

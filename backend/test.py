@@ -14,7 +14,7 @@ def upload_pdf_to_cloud_storage():
     client = storage.Client()
     
     # You'll need to specify your bucket name
-    bucket_name = os.getenv('BUCKET_NAME', 'deployment')  # Replace with your bucket name
+    bucket_name = os.getenv('BUCKET_NAME', 'mckinneysuite')  # Replace with your bucket name
     bucket = client.bucket(bucket_name)
     
     # Local file path

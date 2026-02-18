@@ -11,7 +11,7 @@ from phase1_pymudf import analyze_text_quality, classify_page_quality
 # Phase 2C Smart Selection always prefers OCR (NanoNets) anyway,
 # so detailed PyMuPDF processing was unnecessary and wasting time.
 
-BUCKET_NAME = os.getenv('BUCKET_NAME', 'deployment')
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 PDF_FOLDER = 'pdf'
 METADATA_FILE = f'{PDF_FOLDER}/uploads_metadata.json'
 

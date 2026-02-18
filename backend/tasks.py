@@ -57,7 +57,7 @@ except Exception as e:
 # Initialize Google Cloud Storage (lazy initialization to avoid import-time errors)
 _client = None
 _bucket = None
-bucket_name = os.getenv('BUCKET_NAME', 'deployment')
+bucket_name = os.getenv('BUCKET_NAME', 'mckinneysuite')
 
 def get_storage_client():
     """Get or create Google Cloud Storage client"""

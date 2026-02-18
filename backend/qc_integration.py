@@ -20,7 +20,7 @@ if google_cloud_credentials:
 
 # Initialize GCS
 client = storage.Client()
-bucket_name = os.getenv('BUCKET_NAME', 'deployment')
+bucket_name = os.getenv('BUCKET_NAME', 'mckinneysuite')
 bucket = client.get_bucket(bucket_name)
 
 

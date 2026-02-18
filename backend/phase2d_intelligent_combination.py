@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BUCKET_NAME = os.getenv('BUCKET_NAME', 'deployment')
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 
 
 def _get_bucket() -> storage.bucket.Bucket:

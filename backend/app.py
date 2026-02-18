@@ -56,7 +56,7 @@ app.add_middleware(
 )
 
 # Initialize storage client - make it resilient to avoid import failures
-bucket_name = 'deployment'
+bucket_name = os.getenv('BUCKET_NAME', 'mckinneysuite')
 _client = None
 _bucket = None
 
@@ -553,7 +553,7 @@ def get_upload_status(upload_id: str):
         import re
         
         # Get bucket
-        bucket_name = "deployment"
+        bucket_name = os.getenv('BUCKET_NAME', 'mckinneysuite')
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         

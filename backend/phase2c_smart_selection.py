@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BUCKET_NAME = os.getenv('BUCKET_NAME', 'deployment')
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 
 # Initialize OpenAI
 openai.api_key = os.getenv('OPENAI_API_KEY')
