@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 
 export default function RegisterPage() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -29,10 +29,15 @@ export default function RegisterPage() {
       return;
     }
 
+    if (username.length < 3) {
+      setError('Username must be at least 3 characters');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
-      await register(email, password);
+      await register(username, password);
       router.push('/login');
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try again.');
@@ -53,16 +58,16 @@ export default function RegisterPage() {
         {/* Form Card */}
         <div className="bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-white/20">
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Email Input */}
+            {/* Username Input */}
             <div>
-              <label className="block text-white font-medium mb-2">Email</label>
+              <label className="block text-white font-medium mb-2">Username</label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
                 className="w-full px-4 py-3 rounded-lg bg-white/20 border border-white/30 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-white/50"
-                placeholder="your@email.com"
+                placeholder="mudassir"
               />
             </div>
 

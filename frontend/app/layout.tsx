@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Mckinney and Co",
-  description: "Insurance PDF Analysis API",
+  description: "Insurance PDF Analysis API with QC System",
 };
 
 export default function RootLayout({
@@ -24,9 +24,17 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className="light">
+      <head>
+        <script
+          src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=places,drawing,geometry`}
+          async
+          defer
+        />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        style={{ colorScheme: 'light' }}
       >
         <AuthProvider>{children}</AuthProvider>
       </body>

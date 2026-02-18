@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -19,7 +19,7 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
-      await login(email, password);
+      await login(username, password);
       router.push('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed. Please try again.');
@@ -40,16 +40,16 @@ export default function LoginPage() {
         {/* Form Card */}
         <div className="bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-white/20">
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Email Input */}
+            {/* Username Input */}
             <div>
-              <label className="block text-white font-medium mb-2">Email</label>
+              <label className="block text-white font-medium mb-2">Username</label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
                 className="w-full px-4 py-3 rounded-lg bg-white/20 border border-white/30 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-white/50"
-                placeholder="your@email.com"
+                placeholder="mudassir"
               />
             </div>
 

@@ -192,6 +192,77 @@ def confirm_upload(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/upload-status/{uploadId}")
+def get_upload_status(uploadId: str):
+    """
+    Check processing status for an upload.
+    Returns ready=True when all carriers have completed Phase 3 (LLM extraction).
+    The frontend polls this endpoint every 3 seconds from the confirmed page.
+    """
+    try:
+        import json
+        import re
+        from upload_handler import load_metadata
+
+        # Find the upload in metadata
+        metadata = load_metadata()
+        uploads = metadata.get('uploads', [])
+        upload_record = next((u for u in uploads if u.get('uploadId') == uploadId), None)
+
+        if not upload_record:
+            raise HTTPException(status_code=404, detail=f"Upload {uploadId} not found")
+
+        carriers = upload_record.get('carriers', [])
+
+        # Count expected and completed files
+        expected_files = 0
+        completed_files = 0
+
+        for carrier in carriers:
+            carrier_name = carrier.get('carrierName', 'Unknown')
+            safe_name = carrier_name.lower().replace(" ", "_").replace("&", "and")
+
+            for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF']:
+                pdf_info = carrier.get(file_type)
+                if not pdf_info or not pdf_info.get('path'):
+                    continue
+
+                expected_files += 1
+
+                # Extract timestamp from PDF path
+                pdf_path = pdf_info['path']
+                timestamp_match = re.search(r'_(\d{8}_\d{6})\.pdf$', pdf_path)
+                if not timestamp_match:
+                    continue
+
+                timestamp = timestamp_match.group(1)
+                type_short = file_type.replace('PDF', '').lower()
+
+                # Check if Phase 3 result exists in GCS
+                final_file_path = f"phase3/results/{safe_name}_{type_short}_final_validated_fields_{timestamp}.json"
+                blob = bucket.blob(final_file_path)
+                if blob.exists():
+                    completed_files += 1
+
+        ready = (completed_files == expected_files and expected_files > 0)
+
+        return {
+            "ready": ready,
+            "completed_files": completed_files,
+            "expected_files": expected_files,
+            "uploadId": uploadId,
+            "message": "All files processed" if ready else f"Processing: {completed_files}/{expected_files} files complete"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR in get_upload_status: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
 @app.get("/phase1/process")
 def process_phase1(uploadId: str):
     try:

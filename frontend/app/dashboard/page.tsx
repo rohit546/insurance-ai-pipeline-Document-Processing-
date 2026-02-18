@@ -6,24 +6,38 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 
 export default function DashboardPage() {
-  const { user, isLoggedIn, logout } = useAuth();
+  const { user, isLoggedIn, loading, logout } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoggedIn) {
-      router.push('/login');
+    // Wait for auth to fully load before making any decisions
+    if (!loading) {
+      // Only redirect if we're sure the user is not logged in
+      if (!isLoggedIn || !user) {
+        router.push('/login');
+      }
     }
-  }, [isLoggedIn, router]);
+  }, [isLoggedIn, loading, user, router]);
 
   const handleLogout = () => {
     logout();
     router.push('/');
   };
 
-  if (!isLoggedIn || !user) {
+  // Show loading while auth is being checked
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center">
         <p className="text-white">Loading...</p>
+      </div>
+    );
+  }
+
+  // Only show this if we're sure user is not logged in (after loading is complete)
+  if (!isLoggedIn || !user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center">
+        <p className="text-white">Redirecting to login...</p>
       </div>
     );
   }
@@ -50,27 +64,69 @@ export default function DashboardPage() {
           <div className="mb-8">
             <h2 className="text-4xl font-bold text-white mb-2">Welcome!</h2>
             <p className="text-white/80 text-lg">
-              Logged in as: <span className="font-semibold text-white">{user.email}</span>
+              Logged in as: <span className="font-semibold text-white">{user.username}</span>
             </p>
-            <p className="text-white/60 text-sm mt-2">User ID: {user.user_id}</p>
           </div>
 
-          {/* Dashboard Content */}
+          {/* Dashboard Content - Reordered per requirements */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Feature Card 1 */}
-            <div className="bg-white/5 border border-white/20 rounded-lg p-6 hover:bg-white/10 transition">
-              <h3 className="text-xl font-semibold text-white mb-3">Mckinney & Co Insurance Information</h3>
-              <p className="text-white/70">
-                Get the latest information about Mckinney & Co Insurance.
-              </p>
-            </div>
+            {/* Card 1: Convenience Store E-FORM (Agent Application Form) - CLICKABLE (External Link) */}
+            <a 
+              href="https://prefill-insurance-forms-automated-data-prefill-s-production.up.railway.app/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+            >
+              <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
+                <h3 className="text-xl font-semibold text-white mb-3">🏪 C-store Eform - Agent Application</h3>
+                <p className="text-white/70">
+                  Complete insurance application form with automated data prefill from property databases.
+                </p>
+                <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
+                  <span>Click to start →</span>
+                </div>
+              </div>
+            </a>
 
-            {/* Feature Card 2 - Summary Generation */}
+            {/* Card 2: Convenience Store E-FORM (Client Application Form) - CLICKABLE (External Link) */}
+            <a 
+              href="https://insure-cstore-form-production.up.railway.app/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+            >
+              <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
+                <h3 className="text-xl font-semibold text-white mb-3">📋 C-store Eform - Client Application</h3>
+                <p className="text-white/70">
+                  Complete insurance application form with automated data prefill and CRM integration.
+                </p>
+                <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
+                  <span>Click to start →</span>
+                </div>
+              </div>
+            </a>
+
+            {/* Card 3: Cover Sheet - CLICKABLE (External Link) */}
+            <a 
+              href="https://carrier-submission-tracker-system-for-insurance-production.up.railway.app/login" 
+              target="_blank" 
+              rel="noopener noreferrer"
+            >
+              <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
+                <h3 className="text-xl font-semibold text-white mb-3">📄 Cover Sheet</h3>
+                <p className="text-white/70">
+                  Generate and review cover sheet / market summary.
+                </p>
+                <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
+                  <span>Click to start →</span>
+                </div>
+              </div>
+            </a>
+
+            {/* Card 4: Generate Summary - CLICKABLE */}
             <Link href="/summary">
               <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
                 <h3 className="text-xl font-semibold text-white mb-3">📝 Generate Summary</h3>
                 <p className="text-white/70">
-                  Upload insurance documents and get AI-powered summaries with key information extraction.
+                  AI-Powered policy summary for client presentation.
                 </p>
                 <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
                   <span>Click to start →</span>
@@ -78,37 +134,48 @@ export default function DashboardPage() {
               </div>
             </Link>
 
-            {/* Feature Card 3 */}
-            <div className="bg-white/5 border border-white/20 rounded-lg p-6 hover:bg-white/10 transition">
-              <h3 className="text-xl font-semibold text-white mb-3">Data Enrichment</h3>
-              <p className="text-white/70">
-                Manage your claims and track the status of your claims.
-              </p>
-            </div>
+            {/* Card 5: QC (New) - Unified Certificate + Policy */}
+            <Link href="/qc-new">
+              <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
+                <h3 className="text-xl font-semibold text-white mb-3">🆕 QC Review (New) – Certificate + Policy + Accord </h3>
+                <p className="text-white/70">
+                  Side by side comparison and quality control review
+                </p>
+                <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
+                  <span>Click to start →</span>
+                </div>
+              </div>
+            </Link>
 
-            {/* Feature Card 4 */}
-            <div className="bg-white/5 border border-white/20 rounded-lg p-6 hover:bg-white/10 transition">
-              <h3 className="text-xl font-semibold text-white mb-3">Ezlynx Automation</h3>
-              <p className="text-white/70">
-                Integrate with our API for automated document processing.
-              </p>
-            </div>
+            {/* Card 6: Non C-Store Application - Restaurant, Spa, Saloon, Shopping Center */}
+            <a 
+              href="https://noncstoreprefillform-production.up.railway.app/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+            >
+              <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
+                <h3 className="text-xl font-semibold text-white mb-3">🏢 Non C-Store Application</h3>
+                <p className="text-white/70">
+                  Complete insurance application form for restaurant, spa, saloon, shopping center and other commercial properties.
+                </p>
+                <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
+                  <span>Click to start →</span>
+                </div>
+              </div>
+            </a>
 
-            {/* Feature Card 5 */}
-            <div className="bg-white/5 border border-white/20 rounded-lg p-6 hover:bg-white/10 transition">
-              <h3 className="text-xl font-semibold text-white mb-3">Quality Control / Comparision sheet</h3>
-              <p className="text-white/70">
-                Manage your account settings and preferences.
-              </p>
-            </div>
-
-            {/* Feature Card 6 */}
-            <div className="bg-white/5 border border-white/20 rounded-lg p-6 hover:bg-white/10 transition">
-              <h3 className="text-xl font-semibold text-white mb-3">Cover Sheet</h3>
-              <p className="text-white/70">
-                Get help and support for your insurance document analysis.
-              </p>
-            </div>
+            {/* Card 7: Feedback */}
+            <Link href="/feedback">
+              <div className="bg-gradient-to-br from-white/10 to-white/5 border border-white/30 rounded-lg p-6 hover:from-white/15 hover:to-white/10 transition cursor-pointer h-full">
+                <h3 className="text-xl font-semibold text-white mb-3">💬 Feedback</h3>
+                <p className="text-white/70">
+                  Share your thoughts, report issues, or suggest improvements.
+                </p>
+                <div className="mt-4 text-white/60 text-sm flex items-center gap-2">
+                  <span>Click to start →</span>
+                </div>
+              </div>
+            </Link>
           </div>
         </div>
       </main>

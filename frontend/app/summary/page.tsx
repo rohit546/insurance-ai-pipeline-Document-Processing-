@@ -11,6 +11,7 @@ interface CarrierData {
   propertyPDF: { file: File | null; name: string };
   liabilityPDF: { file: File | null; name: string };
   liquorPDF: { file: File | null; name: string };
+  workersCompPDF: { file: File | null; name: string };
 }
 
 interface UploadResponse {
@@ -25,10 +26,10 @@ interface UploadResponse {
 }
 
 export default function SummaryPage() {
-  const { user, isLoggedIn } = useAuth();
+  const { user, isLoggedIn, loading: authLoading } = useAuth();
   const router = useRouter();
   const [carriers, setCarriers] = useState<CarrierData[]>([
-    { id: 1, name: '', propertyPDF: { file: null, name: '' }, liabilityPDF: { file: null, name: '' }, liquorPDF: { file: null, name: '' } }
+    { id: 1, name: '', propertyPDF: { file: null, name: '' }, liabilityPDF: { file: null, name: '' }, liquorPDF: { file: null, name: '' }, workersCompPDF: { file: null, name: '' } }
   ]);
   const [nextId, setNextId] = useState(2);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -43,16 +44,16 @@ export default function SummaryPage() {
   }, []);
 
   useEffect(() => {
-    if (!isLoggedIn && isHydrated) {
+    if (!authLoading && (!isLoggedIn || !user || !user.username) && isHydrated) {
       router.push('/login');
     }
-  }, [isLoggedIn, isHydrated, router]);
+  }, [isLoggedIn, user, isHydrated, authLoading, router]);
 
   // Set API URL on client side only
   useEffect(() => {
-    const isVercel = window.location.hostname !== 'localhost';
+    const isVercel = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
     const url = isVercel
-      ? 'https://insurance-backend.duckdns.org'
+      ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
       : 'http://localhost:8000';
     setApiUrl(url);
   }, []);
@@ -63,7 +64,8 @@ export default function SummaryPage() {
       name: '',
       propertyPDF: { file: null, name: '' },
       liabilityPDF: { file: null, name: '' },
-      liquorPDF: { file: null, name: '' }
+      liquorPDF: { file: null, name: '' },
+      workersCompPDF: { file: null, name: '' }
     };
     setCarriers([...carriers, newCarrier]);
     setNextId(nextId + 1);
@@ -81,7 +83,7 @@ export default function SummaryPage() {
     setCarriers(carriers.map(c => (c.id === id ? { ...c, name: value } : c)));
   };
 
-  const handleFileUpload = (id: number, type: 'property' | 'liability' | 'liquor', file: File) => {
+  const handleFileUpload = (id: number, type: 'property' | 'liability' | 'liquor' | 'workersComp', file: File) => {
     setCarriers(
       carriers.map(c => {
         if (c.id === id) {
@@ -89,8 +91,10 @@ export default function SummaryPage() {
             return { ...c, propertyPDF: { file, name: file.name } };
           } else if (type === 'liability') {
             return { ...c, liabilityPDF: { file, name: file.name } };
-          } else {
+          } else if (type === 'liquor') {
             return { ...c, liquorPDF: { file, name: file.name } };
+          } else {
+            return { ...c, workersCompPDF: { file, name: file.name } };
           }
         }
         return c;
@@ -99,6 +103,17 @@ export default function SummaryPage() {
   };
 
   const handleExecute = async () => {
+    // Ensure user is loaded before proceeding
+    if (authLoading) {
+      alert('Please wait, loading user information...');
+      return;
+    }
+
+    if (!user || !user.username) {
+      alert('You must be logged in to upload. Please refresh the page and log in again.');
+      return;
+    }
+
     // Validate all carriers have names
     const isValid = carriers.every(
       c => c.name.trim()
@@ -111,7 +126,7 @@ export default function SummaryPage() {
 
     // Check if at least one carrier has at least one file
     const hasAnyFiles = carriers.some(
-      c => c.propertyPDF.file || c.liabilityPDF.file || c.liquorPDF.file
+      c => c.propertyPDF.file || c.liabilityPDF.file || c.liquorPDF.file || c.workersCompPDF.file
     );
 
     if (!hasAnyFiles) {
@@ -133,7 +148,8 @@ export default function SummaryPage() {
           name: c.name,
           hasProperty: !!c.propertyPDF.file,
           hasLiability: !!c.liabilityPDF.file,
-          hasLiquor: !!c.liquorPDF.file
+          hasLiquor: !!c.liquorPDF.file,
+          hasWorkersComp: !!c.workersCompPDF.file
         }))
       });
       formData.append('carriers_json', carriersJson);
@@ -161,16 +177,40 @@ export default function SummaryPage() {
             type: 'liquor'
           }));
         }
+        if (carrier.workersCompPDF.file) {
+          formData.append('files', carrier.workersCompPDF.file);
+          formData.append('file_metadata', JSON.stringify({
+            carrierIndex: carrierIdx,
+            type: 'workersComp'
+          }));
+        }
       });
 
-      // Send to backend
-      const response = await fetch(`${apiUrl}/upload-quotes/`, {
-        method: 'POST',
-        body: formData,
-        headers: {
-          'ngrok-skip-browser-warning': 'true',
-        },
-      });
+      // Validate user is loaded before uploading
+      if (!user || !user.username) {
+        setUploadError('You must be logged in to upload. Please refresh the page and try again.');
+        setIsExecuting(false);
+        return;
+      }
+
+      // Send to backend with extended timeout for large files
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 seconds (2 minutes)
+      
+      console.log('[Summary] Uploading with username:', user.username);
+      
+      try {
+        const response = await fetch(`${apiUrl}/upload-quotes/`, {
+          method: 'POST',
+          body: formData,
+          headers: {
+            'ngrok-skip-browser-warning': 'true',
+            'X-User-ID': user.username, // Use username directly, we validated it above
+          },
+          signal: controller.signal,
+        });
+        
+        clearTimeout(timeoutId);
 
       let data: UploadResponse;
       try {
@@ -190,6 +230,13 @@ export default function SummaryPage() {
 
       setUploadResult(data);
       console.log('Upload successful:', data);
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        if (fetchError.name === 'AbortError') {
+          throw new Error('Upload timeout: Large files may take up to 2 minutes to process. Please try again or use smaller files.');
+        }
+        throw fetchError;
+      }
     } catch (error: any) {
       const errorMessage = error.message || 'Failed to upload carriers';
       setUploadError(errorMessage);
@@ -223,8 +270,8 @@ export default function SummaryPage() {
 
       console.log('PDF Quality Analysis result:', data);
 
-      // Navigate to next page
-      router.push('/summary/confirmed');
+      // Navigate to next page with uploadId
+      router.push(`/summary/confirmed?uploadId=${encodeURIComponent(uploadResult.uploadId)}`);
     } catch (error: any) {
       const errorMessage = error.message || 'Failed to confirm execution';
       setUploadError(errorMessage);
@@ -234,7 +281,7 @@ export default function SummaryPage() {
     }
   };
 
-  if (!isHydrated) {
+  if (!isHydrated || authLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center">
         <p className="text-white">Loading...</p>
@@ -242,7 +289,7 @@ export default function SummaryPage() {
     );
   }
 
-  if (!isLoggedIn || !user) {
+  if (!isLoggedIn || !user || !user.username) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center">
         <p className="text-white">Redirecting to login...</p>
@@ -325,7 +372,7 @@ export default function SummaryPage() {
                     </div>
 
                     {/* PDF Upload Grid */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                       {/* Property PDF */}
                       <div>
                         <label className="block text-white font-medium mb-3">Property PDF</label>
@@ -421,6 +468,38 @@ export default function SummaryPage() {
                           </div>
                         </div>
                       </div>
+
+                      {/* Workers Comp PDF */}
+                      <div>
+                        <label className="block text-white font-medium mb-3">Workers Comp PDF</label>
+                        <div className="relative">
+                          <input
+                            type="file"
+                            accept=".pdf"
+                            onChange={(e) => {
+                              if (e.target.files?.[0]) {
+                                handleFileUpload(carrier.id, 'workersComp', e.target.files[0]);
+                              }
+                            }}
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                          />
+                          <div className="border-2 border-dashed border-white/30 rounded-xl p-8 hover:border-white/50 transition cursor-pointer bg-white/5 hover:bg-white/10">
+                            <div className="text-center">
+                              {carrier.workersCompPDF.file ? (
+                                <>
+                                  <p className="text-green-300 font-medium">✓ {carrier.workersCompPDF.name}</p>
+                                  <p className="text-white/60 text-sm mt-1">{(carrier.workersCompPDF.file.size / 1024).toFixed(2)} KB</p>
+                                </>
+                              ) : (
+                                <>
+                                  <p className="text-white/80 font-medium">📄 Click to upload PDF</p>
+                                  <p className="text-white/60 text-sm mt-1">Workers Compensation Quote</p>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
                     {/* Upload Status */}
@@ -436,6 +515,9 @@ export default function SummaryPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className={carrier.liquorPDF.file ? '✓ text-green-300' : '○ text-white/60'}>Liquor PDF</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={carrier.workersCompPDF.file ? '✓ text-green-300' : '○ text-white/60'}>Workers Comp PDF</span>
                       </div>
                     </div>
                   </div>
@@ -479,13 +561,13 @@ export default function SummaryPage() {
                   <div className="text-center">
                     <p className="text-white/60 text-sm mb-1">Complete Carriers</p>
                     <p className="text-3xl font-bold text-green-300">
-                      {carriers.filter(c => c.name.trim() && (c.propertyPDF.file || c.liabilityPDF.file || c.liquorPDF.file)).length}
+                      {carriers.filter(c => c.name.trim() && (c.propertyPDF.file || c.liabilityPDF.file || c.liquorPDF.file || c.workersCompPDF.file)).length}
                     </p>
                   </div>
                   <div className="text-center">
                     <p className="text-white/60 text-sm mb-1">Total Files Uploaded</p>
                     <p className="text-3xl font-bold text-white">
-                      {carriers.reduce((acc, c) => acc + (c.propertyPDF.file ? 1 : 0) + (c.liabilityPDF.file ? 1 : 0) + (c.liquorPDF.file ? 1 : 0), 0)}
+                      {carriers.reduce((acc, c) => acc + (c.propertyPDF.file ? 1 : 0) + (c.liabilityPDF.file ? 1 : 0) + (c.liquorPDF.file ? 1 : 0) + (c.workersCompPDF.file ? 1 : 0), 0)}
                     </p>
                   </div>
                 </div>
@@ -500,7 +582,7 @@ export default function SummaryPage() {
               {uploadResult.carriers.map((carrier, idx) => (
                 <div key={idx} className="bg-white/5 rounded-lg p-6 border border-white/20">
                   <h4 className="text-lg font-semibold text-white mb-4">{carrier.carrierName}</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     {carrier.propertyPDF ? (
                       <div className="bg-white/5 p-4 rounded">
                         <p className="text-white/80 text-sm font-medium mb-2">Property PDF</p>
@@ -532,6 +614,17 @@ export default function SummaryPage() {
                     ) : (
                       <div className="bg-white/10 p-4 rounded border border-white/20">
                         <p className="text-white/60 text-sm">Liquor PDF - Not uploaded</p>
+                      </div>
+                    )}
+                    {carrier.workersCompPDF ? (
+                      <div className="bg-white/5 p-4 rounded">
+                        <p className="text-white/80 text-sm font-medium mb-2">Workers Comp PDF</p>
+                        <p className="text-white/60 text-xs break-all">{carrier.workersCompPDF.path}</p>
+                        <p className="text-white/50 text-xs mt-2">{(carrier.workersCompPDF.size / 1024).toFixed(2)} KB</p>
+                      </div>
+                    ) : (
+                      <div className="bg-white/10 p-4 rounded border border-white/20">
+                        <p className="text-white/60 text-sm">Workers Comp PDF - Not uploaded</p>
                       </div>
                     )}
                   </div>
