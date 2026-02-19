@@ -307,7 +307,7 @@ def process_upload_smart_selection_analysis(upload_id: str) -> Dict[str, Any]:
         carrier_name = carrier.get('carrierName')
         files_analysis: List[Dict[str, Any]] = []
         
-        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF']:
+        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF', 'workersCompPDF']:
             pdf_info = carrier.get(file_type)
             if not pdf_info:
                 continue
@@ -329,6 +329,23 @@ def process_upload_smart_selection_analysis(upload_id: str) -> Dict[str, Any]:
                 # Find latest Phase 1 and Phase 2 files
                 pymupdf_files = list(bucket.list_blobs(prefix=f'phase1/results/{safe_carrier_name}_{type_short}_pymupdf_clean_pages_only_'))
                 ocr_files = list(bucket.list_blobs(prefix=f'phase2/results/{safe_carrier_name}_{type_short}_ocr_all_pages_'))
+                
+                # Workers Comp doesn't have Phase 1, only OCR
+                if file_type == 'workersCompPDF':
+                    if not ocr_files:
+                        print(f"Warning: Missing Phase 2 OCR results for {carrier_name} {file_type}")
+                        continue
+                    # For Workers Comp, skip smart selection and go directly to Phase 2D with OCR only
+                    ocr_file = sorted(ocr_files, key=lambda x: x.time_created)[-1].name
+                    files_analysis.append({
+                        'type': file_type,
+                        'selection_results': {'use_ocr_only': True},  # Signal to use OCR only
+                        'ocr_source': f'gs://{BUCKET_NAME}/{ocr_file}'
+                    })
+                    # Save to GCS
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    save_selection_results_to_gcs(bucket, carrier_name, safe_carrier_name, file_type, timestamp, {'use_ocr_only': True})
+                    continue
                 
                 if not pymupdf_files or not ocr_files:
                     print(f"Warning: Missing Phase 1 or Phase 2 results for {carrier_name} {file_type}")

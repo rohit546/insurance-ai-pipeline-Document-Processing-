@@ -127,6 +127,35 @@ def create_intelligent_combined_file(
     report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report_lines.append(f"Carrier: {carrier_name}")
     report_lines.append(f"File Type: {file_type.upper()}")
+    
+    # Handle OCR-only case (Workers Comp)
+    if selection_results.get('use_ocr_only'):
+        report_lines.append(f"Method: OCR Only (No PyMuPDF)")
+        report_lines.append(f"Total Pages: {len(ocr_pages)}")
+        report_lines.append("=" * 80)
+        report_lines.append("")
+        
+        # Process each OCR page
+        for page_num in sorted(ocr_pages.keys()):
+            page_text = ocr_pages[page_num]
+            report_lines.append(f"PAGE {page_num} (OCR Only):")
+            report_lines.append("-" * 50)
+            report_lines.append(f"Characters: {len(page_text):,}")
+            num_lines = len([line for line in page_text.split(chr(10)) if line.strip()])
+            report_lines.append(f"Lines: {num_lines}")
+            report_lines.append("")
+            report_lines.append("TEXT CONTENT:")
+            report_lines.append("-" * 30)
+            report_lines.append(page_text)
+            report_lines.append("=" * 80)
+            report_lines.append("")
+        
+        report_content = "\n".join(report_lines)
+        _upload_text_to_gcs(bucket, combined_file_path, report_content)
+        print(f"✅ Saved OCR-only combined file to: gs://{BUCKET_NAME}/{combined_file_path}")
+        return combined_file_path
+    
+    # Normal case: PyMuPDF + OCR smart selection
     report_lines.append(f"Method: Smart LLM Selection + Intelligent Combining")
     report_lines.append(f"Total Pages: {len(selection_results)}")
     report_lines.append("=" * 80)
@@ -207,7 +236,7 @@ def process_upload_intelligent_combination(upload_id: str) -> Dict[str, Any]:
         carrier_name = carrier.get('carrierName')
         safe_carrier_name = carrier_name.lower().replace(" ", "_").replace("&", "and")
         
-        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF']:
+        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF', 'workersCompPDF']:
             pdf_info = carrier.get(file_type)
             if not pdf_info:
                 continue
@@ -238,6 +267,33 @@ def process_upload_intelligent_combination(upload_id: str) -> Dict[str, Any]:
                 
                 # Read smart selection results
                 selection_results = read_smart_selection_results_from_gcs(bucket, selection_file)
+                
+                # Workers Comp doesn't have Phase 1, only OCR
+                if file_type == 'workersCompPDF':
+                    # For Workers Comp, use OCR only
+                    ocr_files = list(bucket.list_blobs(prefix=f'phase2/results/{safe_carrier_name}_{type_short}_ocr_all_pages_'))
+                    if not ocr_files:
+                        print(f"Warning: Missing Phase 2 OCR results for {carrier_name} {file_type}")
+                        continue
+                    
+                    ocr_file = sorted(ocr_files, key=lambda x: x.time_created)[-1].name
+                    ocr_pages = read_ocr_all_pages_from_gcs(bucket, ocr_file)
+                    
+                    # Create combined file with OCR only (no PyMuPDF)
+                    combined_path = create_intelligent_combined_file(
+                        bucket, {'use_ocr_only': True}, {}, ocr_pages,  # Empty PyMuPDF pages
+                        carrier_name, safe_carrier_name, file_type, report_timestamp
+                    )
+                    
+                    all_results.append({
+                        'carrierName': carrier_name,
+                        'fileType': file_type,
+                        'combinedFile': f'gs://{BUCKET_NAME}/{combined_path}',
+                        'totalPages': len(ocr_pages),
+                        'pymupdfSelected': 0,
+                        'ocrSelected': len(ocr_pages)
+                    })
+                    continue
                 
                 # Find corresponding Phase 1 and Phase 2 files
                 pymupdf_files = list(bucket.list_blobs(prefix=f'phase1/results/{safe_carrier_name}_{type_short}_pymupdf_clean_pages_only_'))

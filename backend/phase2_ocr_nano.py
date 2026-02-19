@@ -2,6 +2,7 @@
 Phase 2: OCR Extraction
 After Phase 1 identifies problem pages, OCR extracts text from all pages
 Works with Google Cloud Storage
+Uses Joblib for parallel processing
 """
 import fitz
 from docstrange import DocumentExtractor
@@ -13,6 +14,10 @@ import tempfile
 from datetime import datetime
 from typing import Dict, Any, List
 from google.cloud import storage
+from joblib import Parallel, delayed
+
+# Note: JOBLIB_MAX_NUM_THREADS is set by cpu_allocator.py based on workload
+# This allows dynamic CPU allocation (6 CPU for QC, 2-8 CPU for Summary)
 
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 PDF_FOLDER = 'pdf'
@@ -222,13 +227,51 @@ def extract_with_nanonets_ocr(pdf_bytes: bytes, page_num: int) -> Dict[str, Any]
         # This avoids Windows file locking issues during OCR processing
 
 
-def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int) -> Dict[str, Any]:
-    """Process ALL pages with OCR"""
-    print("PHASE 2: OCR EXTRACTION - ALL PAGES")
+def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int, n_jobs: int = -1) -> Dict[str, Any]:
+    """
+    Process ALL pages with OCR - PARALLELIZED with Joblib
+    
+    Args:
+        pdf_bytes: PDF file bytes
+        total_pages: Total number of pages
+        n_jobs: Number of parallel workers (default: -1 for all cores)
+    """
+    import os
+    cpu_count = os.cpu_count() or 1
+    
+    # Get actual worker count from JOBLIB_MAX_NUM_THREADS (set by cpu_allocator)
+    joblib_threads = int(os.environ.get('JOBLIB_MAX_NUM_THREADS', cpu_count))
+    actual_workers = joblib_threads if n_jobs == -1 else n_jobs
+    
+    print("\n" + "=" * 80)
+    print("PHASE 2: OCR EXTRACTION - ALL PAGES (PARALLEL)")
     print("=" * 80)
     print(f"Processing {total_pages} pages with NanoNets OCR")
-    print("=" * 80)
+    print(f"System CPU Cores: {cpu_count}")
+    print(f"JOBLIB_MAX_NUM_THREADS: {joblib_threads}")
+    print(f"Allocated Workers: {actual_workers}")
+    print(f"Task Type: Summary (Dynamic CPU allocation)")
+    print("=" * 80 + "\n")
     
+    def process_single_page(page_num):
+        """Process single page - called in parallel by Joblib"""
+        print(f"\nProcessing Page {page_num}...")
+        ocr_result = extract_with_nanonets_ocr(pdf_bytes, page_num)
+        return page_num, ocr_result
+    
+    # Process all pages in parallel using Joblib
+    # backend='threading' is perfect for I/O-bound tasks (API calls)
+    # verbose=5 shows progress (0-50, higher = more verbose)
+    results_list = Parallel(
+        n_jobs=n_jobs,
+        backend='threading',
+        verbose=5
+    )(
+        delayed(process_single_page)(page_num)
+        for page_num in range(1, total_pages + 1)
+    )
+    
+    # Organize results
     results = {
         'successful_pages': [],
         'failed_pages': [],
@@ -236,62 +279,54 @@ def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int) -> Dict[str, 
         'total_pages': total_pages
     }
     
-    all_pages = list(range(1, total_pages + 1))
-    temp_files_to_cleanup = []  # Track all temp files for cleanup at the end
+    temp_files_to_cleanup = []
     
-    try:
-        for page_num in all_pages:
-            print(f"\nProcessing Page {page_num}...")
-            
-            # Extract text with OCR
-            ocr_result = extract_with_nanonets_ocr(pdf_bytes, page_num)
-            
-            # Collect temp file path for later cleanup
-            if ocr_result.get('temp_file_path'):
-                temp_files_to_cleanup.append(ocr_result['temp_file_path'])
-            
-            # Store results (without temp_file_path in the stored result)
-            result_to_store = {k: v for k, v in ocr_result.items() if k != 'temp_file_path'}
-            results['all_results'][page_num] = result_to_store
-            
-            if ocr_result['success']:
-                results['successful_pages'].append({
-                    'page_num': page_num,
-                    'text': ocr_result['text'],
-                    'metrics': ocr_result['metrics']
-                })
-                
-                metrics = ocr_result['metrics']
-                print(f"  [SUCCESS] - {metrics['total_chars']} chars, {metrics['readable_words']} words, {metrics['confidence_score']:.1f}% confidence")
-            else:
-                results['failed_pages'].append({
-                    'page_num': page_num,
-                    'error': ocr_result['error']
-                })
-                print(f"  [FAILED] - {ocr_result['error']}")
-    finally:
-        # Clean up all temp files at the end when all pages are processed
-        # This avoids Windows file locking issues during OCR processing
-        if temp_files_to_cleanup:
-            print(f"\n🧹 Cleaning up {len(temp_files_to_cleanup)} temporary files...")
-            cleanup_count = 0
-            for temp_file_path in temp_files_to_cleanup:
-                if temp_file_path and os.path.exists(temp_file_path):
-                    try:
-                        # Add a small delay to ensure file handles are released
-                        time.sleep(0.1)
-                        os.remove(temp_file_path)
-                        cleanup_count += 1
-                    except Exception as e:
-                        # Log but don't fail - temp files will be cleaned by OS later
-                        print(f"    [WARNING] Could not delete temp file {os.path.basename(temp_file_path)}: {e}")
-            
-            if cleanup_count == len(temp_files_to_cleanup):
-                print(f"✅ Successfully cleaned up {cleanup_count} temporary files")
-            elif cleanup_count > 0:
-                print(f"⚠️  Cleaned up {cleanup_count}/{len(temp_files_to_cleanup)} temporary files (OS will handle the rest)")
-            else:
-                print(f"⚠️  Could not clean up temp files (OS will handle cleanup automatically)")
+    # Process results from parallel execution
+    for page_num, ocr_result in results_list:
+        # Collect temp file path for cleanup
+        if ocr_result.get('temp_file_path'):
+            temp_files_to_cleanup.append(ocr_result['temp_file_path'])
+        
+        # Store results (without temp_file_path)
+        result_to_store = {k: v for k, v in ocr_result.items() if k != 'temp_file_path'}
+        results['all_results'][page_num] = result_to_store
+        
+        if ocr_result['success']:
+            results['successful_pages'].append({
+                'page_num': page_num,
+                'text': ocr_result['text'],
+                'metrics': ocr_result['metrics']
+            })
+            metrics = ocr_result['metrics']
+            print(f"  ✅ Page {page_num} SUCCESS - {metrics['total_chars']} chars, {metrics['readable_words']} words, {metrics['confidence_score']:.1f}% confidence")
+        else:
+            results['failed_pages'].append({
+                'page_num': page_num,
+                'error': ocr_result.get('error')
+            })
+            print(f"  ❌ Page {page_num} FAILED - {ocr_result.get('error')}")
+    
+    # Clean up temp files
+    if temp_files_to_cleanup:
+        print(f"\n🧹 Cleaning up {len(temp_files_to_cleanup)} temporary files...")
+        cleanup_count = 0
+        for temp_file_path in temp_files_to_cleanup:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    time.sleep(0.1)
+                    os.remove(temp_file_path)
+                    cleanup_count += 1
+                except Exception as e:
+                    print(f"    [WARNING] Could not delete temp file {os.path.basename(temp_file_path)}: {e}")
+        
+        if cleanup_count == len(temp_files_to_cleanup):
+            print(f"✅ Successfully cleaned up {cleanup_count} temporary files")
+        elif cleanup_count > 0:
+            print(f"⚠️  Cleaned up {cleanup_count}/{len(temp_files_to_cleanup)} temporary files (OS will handle the rest)")
+        else:
+            print(f"⚠️  Could not clean up temp files (OS will handle cleanup automatically)")
+    
+    print(f"\n✅ Parallel OCR processing complete: {len(results['successful_pages'])}/{total_pages} pages successful")
     
     return results
 
@@ -356,7 +391,7 @@ def process_upload_ocr_analysis(upload_id: str) -> Dict[str, Any]:
         carrier_name = carrier.get('carrierName')
         files_analysis: List[Dict[str, Any]] = []
         
-        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF']:
+        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF', 'workersCompPDF']:
             pdf_info = carrier.get(file_type)
             if not pdf_info:
                 continue

@@ -1,6 +1,6 @@
 """
-Phase 3 Liquor: LLM Information Extraction for Liquor/Bar Insurance
-Extracts 9 specific liquor coverage fields from insurance documents using GPT.
+Phase 3 Workers Comp: LLM Information Extraction for Workers Compensation
+Extracts 8 specific workers compensation coverage fields from insurance documents using GPT.
 Works with Google Cloud Storage.
 Uses Joblib for parallel chunk processing.
 """
@@ -13,7 +13,7 @@ from typing import Dict, Any, List
 from google.cloud import storage
 from dotenv import load_dotenv
 from joblib import Parallel, delayed
-from schemas.liquor_schema import LIQUOR_FIELDS_SCHEMA, get_liquor_field_names, get_liquor_required_fields
+from schemas.workers_comp_schema import WORKERS_COMP_FIELDS_SCHEMA, get_workers_comp_field_names, get_workers_comp_required_fields
 
 load_dotenv()
 
@@ -24,7 +24,7 @@ openai.api_key = os.getenv('OPENAI_API_KEY')
 
 if not openai.api_key:
     print("Warning: OPENAI_API_KEY not found in environment variables!")
-    print("Phase 3 Liquor LLM extraction will fail without OpenAI API key")
+    print("Phase 3 Workers Comp LLM extraction will fail without OpenAI API key")
 
 
 def _get_bucket() -> storage.bucket.Bucket:
@@ -38,6 +38,14 @@ def _download_text_from_gcs(bucket: storage.bucket.Bucket, blob_path: str) -> st
     if not blob.exists():
         return ""
     return blob.download_as_string().decode('utf-8')
+
+
+def _download_json_from_gcs(bucket: storage.bucket.Bucket, blob_path: str) -> Dict[str, Any]:
+    """Download JSON file from GCS"""
+    blob = bucket.blob(blob_path)
+    if not blob.exists():
+        return {}
+    return json.loads(blob.download_as_string().decode('utf-8'))
 
 
 def _upload_json_to_gcs(bucket: storage.bucket.Bucket, blob_path: str, data: Dict[str, Any]) -> None:
@@ -88,6 +96,7 @@ def read_combined_file_from_gcs(bucket: storage.bucket.Bucket, file_path: str) -
         print(f"Error reading combined file: {e}")
         return []
 
+
 def create_chunks(all_pages: List[Dict[str, Any]], chunk_size: int = 4) -> List[Dict[str, Any]]:
     """Split pages into chunks of 4 pages each"""
     chunks = []
@@ -121,34 +130,32 @@ def create_chunks(all_pages: List[Dict[str, Any]], chunk_size: int = 4) -> List[
     
     return chunks
 
-def extract_with_llm(chunk, chunk_num, total_chunks):
-    """Extract information using LLM with your exact prompt"""
+def extract_with_llm(chunk: Dict[str, Any], chunk_num: int, total_chunks: int) -> Dict[str, Any]:
+    """Extract information using LLM with Workers Comp prompt"""
     
     prompt = f"""
-    Analyze the following liquor/bar insurance document text and extract ONLY the 6 specific liquor coverage fields listed below.
+    Analyze the following workers compensation insurance document text and extract ONLY the 8 specific workers compensation coverage fields listed below.
     
-    CRITICAL: Extract ONLY these 6 fields. Do NOT create new field names or extract any other information.
+    CRITICAL: Extract ONLY these 8 fields. Do NOT create new field names or extract any other information.
     
-    THE 6 SPECIFIC FIELDS TO EXTRACT (with examples of what to look for):
-    1. Each Occurrence/General Aggregate Limits - Look for: "$1,000,000 / $2,000,000", "$1,000,000 / $1,000,000", "Limit of Insurance: $1,000,000 Each Common Cause and $2,000,000 Aggregate", any occurrence/aggregate limits with dollar amounts and "/" separator
-    2. Sales - Subject to Audit - Look for: "$52,000", "$60,000", "$80,000", "$93,000", "Based upon Estimated Annual and Alcohol Receipts of: $52,000", any sales amount subject to audit
-    3. Assault & Battery/Firearms/Active Assailant - Look for: "Not Excluded", "Follows GL", "NOT EXCLUDING ASSAULT & BATTERY", "Excluded", "Included", any assault/battery/firearms/active assailant coverage status
-    4. Requirements - Look for: "Active liquor license", "Training to staff serving alcohol", "Age verification", "minors are excluded", any requirements listed
-    5. If any subjectivities in quote please add - Look for: "The establishment ceases the sale of alcohol daily by", "Approved by State / County / City", "approved represented time", any subjectivities or conditions
-    6. Minimum Earned - Look for: "25%", "MEP: 25%", "35%", any minimum earned premium percentage
-    7. Liquor Premium - Look for: "$800.00", "Liquor Premium", "Bar Premium", "TOTAL excl Terrorism", "TOTAL CHARGES W/O TRIA", any liquor premium amount (PRIORITY: Look for "TOTAL excl Terrorism" or "TOTAL CHARGES W/O TRIA" first)
-    8. Total Premium (With/Without Terrorism) - Look for: "TOTAL CHARGES W/O TRIA $7,176.09, TOTAL CHARGES WITH TRIA $7,441.13", "TOTAL excl Terrorism $2,019.68, TOTAL incl Terrorism $2,123.68", "Total Premium", "Annual Premium", any total premium amount (EXTRACT BOTH VALUES if available: "Without Terrorism: $X,XXX.XX, With Terrorism: $X,XXX.XX")
-    9. Policy Premium - Look for: "$2,500.00", "Policy Premium", "Base Premium", "Liquor" base amount, any policy premium amount
+    THE 8 SPECIFIC FIELDS TO EXTRACT (with examples of what to look for):
+    1. Limits - Look for: "$1,000,000 Each Accident", "$1,000,000 Policy Limit", "$1,000,000 Each Employee", "$500,000 / $500,000 / $500,000", "$1,000,000 / $1,000,000 / $1,000,000", any workers compensation limits with dollar amounts
+    2. FEIN # - Look for: "47-4792684", "39-4013959", "33-4251695", any Federal Employer Identification Numbers (FEIN)
+    3. Payroll - Subject to Audit - Look for: "$36,000", "$45,000", "$30,000", any payroll amounts subject to audit
+    4. Excluded Officer - Look for: "Parvez Jiwani", "Provide Details", "Details Required", "Officer decision on Inclusion / Exclusion required", any excluded officer information
+    5. If Opting out from Workers Compensation Coverage - Look for: "By State Law in GA you are liable --- by not opting any injuries to the employees during work hours will not be covered", any opt-out information or liability statements
+    6. Workers Compensation Premium - Look for: "$1,500.00", "WC Premium", "Workers Comp Premium", "TOTAL excl Terrorism", "TOTAL CHARGES W/O TRIA", any workers compensation premium amount (PRIORITY: Look for "TOTAL excl Terrorism" or "TOTAL CHARGES W/O TRIA" first)
+    7. Total Premium - Look for: "$3,500.00", "TOTAL incl Terrorism", "TOTAL CHARGES WITH TRIA", "Total Premium", "Annual Premium", any total premium amount
+    8. Policy Premium - Look for: "$2,500.00", "Policy Premium", "Base Premium", "Workers Compensation" base amount, any policy premium amount
     
     EXTRACTION RULES:
     - Extract EXACTLY as written in the document
     - Look for SIMILAR PATTERNS even if exact examples don't match
     - For Limits: Look for dollar amounts with "/" separator (e.g., "$X,XXX,XXX / $X,XXX,XXX")
+    - For FEIN #: Look for numeric patterns like "XX-XXXXXXX" (Federal Employer Identification Numbers)
     - For Dollar Amounts: Look for any dollar amounts ($X,XXX, $X,XXX.XX, $XXX,XXX)
-    - For Coverage Status: Look for "Excluded", "Not Excluded", "Included"
-    - For Requirements: Extract ALL requirements listed, preserve line breaks and formatting
-    - For Subjectivities: Extract complete text block for that field, preserve formatting
-    - For Percentages: Look for any percentages (X%, X.X%, "MEP: X%")
+    - For Officer Information: Extract complete officer details, names, and exclusion/inclusion status
+    - For Opt-out Information: Extract complete liability statements and opt-out conditions
     - For Multi-line Values: Extract everything related to that field, preserve line breaks
     - For Complex Values: Extract the complete text block for that field
     - If field is not found, set to null
@@ -158,7 +165,7 @@ def extract_with_llm(chunk, chunk_num, total_chunks):
     - Do NOT extract administrative, financial, or policy information
     - Do NOT create new field names
     - Do NOT extract policy numbers or legal disclosures
-    - Note: Some quotes may have multiple columns (2 carriers), extract values for EACH column as separate entries when applicable
+    - Note: Some quotes may have multiple columns (2-3 carriers), extract values for EACH column as separate entries when applicable
     
     IMPORTANT: This is chunk {chunk_num} of {total_chunks}. This chunk contains pages {chunk['page_nums']}. 
     
@@ -170,24 +177,15 @@ def extract_with_llm(chunk, chunk_num, total_chunks):
     - DO NOT guess or estimate page numbers - use the exact number from the marker
     - Multiple fields can be on the same page
     
-    Example: If you see:
-    === PAGE 7 (OCR) ===
-    Liquor Liability
-    Each Occurrence: $1,000,000
-    Sales: $60,000
-    
-    Then those fields should have page: 7 (because they're under "=== PAGE 7 ===" marker)
-    
     CRITICAL: Return ONLY valid JSON with this exact format:
     {{
-        "Each Occurrence/General Aggregate Limits": {{"value": "$1,000,000 / $2,000,000", "page": 5}},
-        "Sales - Subject to Audit": {{"value": "$60,000", "page": 5}},
-        "Assault & Battery/Firearms/Active Assailant": {{"value": "Excluded", "page": 5}},
-        "Requirements": {{"value": "Active liquor license, Training to staff serving alcohol, Age verification (minors are excluded)", "page": 5}},
-        "If any subjectivities in quote please add": {{"value": "The establishment ceases the sale of alcohol daily by the represented time. Approved by State / County / City", "page": 3}},
-        "Minimum Earned": {{"value": "25%", "page": 3}},
-        "Liquor Premium": {{"value": "$800.00", "page": 3}},
-        "Total Premium (With/Without Terrorism)": {{"value": "Without Terrorism: $800.00, With Terrorism: $900.00", "page": 3}},
+        "Limits": {{"value": "$1,000,000 Each Accident, $1,000,000 Policy Limit, $1,000,000 Each Employee", "page": 5}},
+        "FEIN #": {{"value": "47-4792684", "page": 5}},
+        "Payroll - Subject to Audit": {{"value": "$36,000", "page": 5}},
+        "Excluded Officer": {{"value": "Parvez Jiwani", "page": 5}},
+        "If Opting out from Workers Compensation Coverage": {{"value": "By State Law in GA you are liable --- by not opting any injuries to the employees during work hours will not be covered", "page": 3}},
+        "Workers Compensation Premium": {{"value": "$1,500.00", "page": 3}},
+        "Total Premium": {{"value": "$3,500.00", "page": 3}},
         "Policy Premium": {{"value": "$2,500.00", "page": 3}}
     }}
     
@@ -278,12 +276,12 @@ def extract_with_llm(chunk, chunk_num, total_chunks):
         print(f"  [ERROR] LLM processing failed: {e}")
         return {'_metadata': {'chunk_num': chunk_num, 'page_nums': chunk['page_nums'], 'error': str(e)}}
 
-def merge_extraction_results(all_results):
+def merge_extraction_results(all_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Merge results from all chunks, prioritizing non-null values"""
     
-    # Use schema to initialize Liquor fields in correct order
+    # Use schema to initialize Workers Comp fields in correct order
     # This ensures Google Sheets always has consistent field ordering
-    expected_field_names = get_liquor_field_names()  # From Liquor schema - guaranteed order
+    expected_field_names = get_workers_comp_field_names()  # From Workers Comp schema - guaranteed order
     
     merged_result = {}
     
@@ -374,185 +372,3 @@ def save_extraction_results_to_gcs(
     
     return final_file_path
 
-
-def _check_if_all_carriers_complete_liquor(bucket: storage.bucket.Bucket, upload_id: str) -> bool:
-    """
-    Check if all carriers in this upload have completed Phase 3 Liquor.
-    Returns True if this is the last carrier to finish.
-    """
-    try:
-        # Read metadata to get total carriers
-        from phase1 import _read_metadata
-        full_metadata = _read_metadata(bucket)
-        uploads = full_metadata.get('uploads', [])
-        upload_record = next((u for u in uploads if u.get('uploadId') == upload_id), None)
-        
-        if not upload_record:
-            print(f"⚠️  Upload {upload_id} not found in metadata")
-            return False
-        
-        carriers = upload_record.get('carriers', [])
-        
-        if len(carriers) == 0:
-            print(f"⚠️  No carriers found for upload {upload_id}")
-            return False
-        
-        # Count how many carriers have completed Phase 3 Liquor
-        completed_count = 0
-        for carrier in carriers:
-            carrier_name = carrier.get('carrierName', 'Unknown')
-            safe_name = carrier_name.lower().replace(" ", "_").replace("&", "and")
-            
-            # Check for liquor final validated fields
-            if carrier.get('liquorPDF'):
-                pdf_info = carrier.get('liquorPDF')
-                if not pdf_info or not pdf_info.get('path'):
-                    continue
-                
-                # Extract timestamp from PDF path
-                pdf_path = pdf_info['path']
-                timestamp_match = re.search(r'_(\d{8}_\d{6})\.pdf$', pdf_path)
-                if not timestamp_match:
-                    continue
-                
-                timestamp = timestamp_match.group(1)
-                
-                # Check if Phase 3 Liquor result exists
-                final_file_path = f"phase3/results/{safe_name}_liquor_final_validated_fields_{timestamp}.json"
-                blob = bucket.blob(final_file_path)
-                if blob.exists():
-                    completed_count += 1
-        
-        # Count expected liquor files
-        expected_files = 0
-        for carrier in carriers:
-            if carrier.get('liquorPDF') and carrier.get('liquorPDF').get('path'):
-                expected_files += 1
-        
-        print(f"📊 Upload {upload_id}: {completed_count}/{expected_files} Liquor files completed")
-        
-        return completed_count == expected_files and expected_files > 0
-        
-    except Exception as e:
-        print(f"❌ Error checking Liquor completion status: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def process_upload_llm_extraction_liquor(upload_id: str) -> Dict[str, Any]:
-    """
-    Given an upload_id, read Phase 2D results from GCS,
-    extract liquor insurance fields using LLM, and save results.
-    """
-    if not openai.api_key:
-        return {"success": False, "error": "OpenAI API key not configured. Cannot run Phase 3 Liquor."}
-    
-    bucket = _get_bucket()
-    
-    # Read metadata
-    from phase1 import _read_metadata
-    metadata = _read_metadata(bucket)
-    
-    uploads: List[Dict[str, Any]] = metadata.get('uploads', [])
-    record = next((u for u in uploads if u.get('uploadId') == upload_id), None)
-    if record is None:
-        return {"success": False, "error": f"uploadId {upload_id} not found"}
-    
-    all_results: List[Dict[str, Any]] = []
-    
-    for carrier in record.get('carriers', []):
-        carrier_name = carrier.get('carrierName')
-        safe_carrier_name = carrier_name.lower().replace(" ", "_").replace("&", "and")
-        
-        # Process liquor PDF
-        pdf_info = carrier.get('liquorPDF')
-        if pdf_info:
-            gs_path = pdf_info.get('path')
-            if gs_path:
-                try:
-                    # Extract timestamp from PDF path
-                    original_pdf_path = pdf_info.get('path')
-                    timestamp_match = re.search(r'_(\d{8}_\d{6})\.pdf$', original_pdf_path)
-                    if not timestamp_match:
-                        report_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    else:
-                        report_timestamp = timestamp_match.group(1)
-                    
-                    # Find latest intelligent combined file
-                    combined_files = list(bucket.list_blobs(prefix=f'phase2d/results/{safe_carrier_name}_liquor_intelligent_combined_'))
-                    if not combined_files:
-                        print(f"Warning: No combined file found for {carrier_name} liquor")
-                        continue
-                    
-                    # Get latest file
-                    combined_file = sorted(combined_files, key=lambda x: x.time_created)[-1].name
-                    
-                    # Read combined file
-                    all_pages = read_combined_file_from_gcs(bucket, combined_file)
-                    if not all_pages:
-                        print(f"Warning: No pages extracted from {combined_file}")
-                        continue
-                    
-                    # Create chunks (4 pages each)
-                    chunks = create_chunks(all_pages, chunk_size=4)
-                    
-                    # Process each chunk with LLM - PARALLELIZED for faster processing
-                    print(f"\nProcessing {len(chunks)} Liquor chunks in parallel...")
-                    
-                    def process_single_chunk(chunk):
-                        """Process one chunk - called in parallel"""
-                        print(f"  Processing Liquor Chunk {chunk['chunk_num']}/{len(chunks)}...")
-                        return extract_with_llm(chunk, chunk['chunk_num'], len(chunks))
-                    
-                    # Process all chunks in parallel (n_jobs=-1 uses all available cores)
-                    chunk_results = Parallel(
-                        n_jobs=-1,
-                        backend='threading',
-                        verbose=5
-                    )(
-                        delayed(process_single_chunk)(chunk)
-                        for chunk in chunks
-                    )
-                    
-                    # Merge all results
-                    print(f"\nMerging results from {len(chunk_results)} chunks...")
-                    merged_result = merge_extraction_results(chunk_results)
-                    
-                    # Save results to GCS
-                    final_path = save_extraction_results_to_gcs(bucket, merged_result, carrier_name, safe_carrier_name, 'liquorPDF', report_timestamp)
-                    
-                    all_results.append({
-                        'carrierName': carrier_name,
-                        'fileType': 'liquorPDF',
-                        'finalFields': f'gs://{BUCKET_NAME}/{final_path}',
-                        'totalFields': len([k for k in merged_result.keys() if not k.startswith('_')]),
-                        'fieldsFound': len([k for k, v in merged_result.items() if v is not None and not k.startswith('_')])
-                    })
-                    
-                except Exception as e:
-                    print(f"Error processing {carrier_name} liquor: {e}")
-                    all_results.append({
-                        'carrierName': carrier_name,
-                        'fileType': 'liquorPDF',
-                        'error': str(e)
-                    })
-    
-    result = {
-        "success": True,
-        "uploadId": upload_id,
-        "results": all_results
-    }
-    
-    # Check if all carriers in this upload have completed Phase 3 Liquor
-    print("\n✅ Phase 3 Liquor LLM extraction complete!")
-    print("🔍 Checking if all carriers are complete...")
-    
-    if _check_if_all_carriers_complete_liquor(bucket, upload_id):
-        print("🎉 ALL LIQUOR CARRIERS COMPLETE!")
-        print("💡 Auto-trigger disabled. Manual sheet mapping will be implemented.")
-        # Auto-trigger disabled - user will implement manual mapping
-    else:
-        print("⏳ Other Liquor carriers still processing. Waiting for all to complete...")
-    
-    return result

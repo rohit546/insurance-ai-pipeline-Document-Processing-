@@ -19,18 +19,19 @@ COPY backend/ .
 # Copy qc-new directory for QC system (standalone feature)
 COPY qc-new/ /app/qc-new/
 
-# Copy startup script
-COPY start.sh .
-RUN chmod +x start.sh
+# Copy startup script and make it executable
+COPY backend/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
-# Create credentials directory
+# Create credentials directory (credentials file will be created from env var at runtime)
 RUN mkdir -p ./credentials
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
+# Railway uses PORT env var (set dynamically)
 EXPOSE 8000
 
-# Start via startup script (handles credential decoding + server start)
-CMD ["./start.sh"]
+# Use startup script (handles credentials and starts app)
+CMD ["/app/start.sh"]

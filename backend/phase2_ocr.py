@@ -2,6 +2,7 @@
 Phase 2: OCR Extraction
 After Phase 1 identifies problem pages, OCR extracts text from all pages
 Works with Google Cloud Storage
+Uses Joblib for parallel processing
 """
 import fitz
 import pytesseract
@@ -13,6 +14,7 @@ from typing import Dict, Any, List
 from PIL import Image
 import io
 from google.cloud import storage
+from joblib import Parallel, delayed
 
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 PDF_FOLDER = 'pdf'
@@ -154,13 +156,40 @@ def extract_with_tesseract_ocr(pdf_bytes: bytes, page_num: int) -> Dict[str, Any
         }
 
 
-def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int) -> Dict[str, Any]:
-    """Process ALL pages with OCR"""
-    print("PHASE 2: OCR EXTRACTION - ALL PAGES")
+def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int, n_jobs: int = 2) -> Dict[str, Any]:
+    """
+    Process ALL pages with Tesseract OCR - PARALLELIZED with Joblib
+    
+    Args:
+        pdf_bytes: PDF file bytes
+        total_pages: Total number of pages
+        n_jobs: Number of parallel workers (default: 4, -1 for all cores)
+    """
+    print("PHASE 2: OCR EXTRACTION - ALL PAGES (PARALLEL)")
     print("=" * 80)
     print(f"Processing {total_pages} pages with Tesseract OCR")
+    print(f"Parallel Workers: {n_jobs}")
     print("=" * 80)
     
+    def process_single_page(page_num):
+        """Process single page - called in parallel by Joblib"""
+        print(f"\nProcessing Page {page_num}...")
+        ocr_result = extract_with_tesseract_ocr(pdf_bytes, page_num)
+        return page_num, ocr_result
+    
+    # Process all pages in parallel using Joblib
+    # backend='threading' is perfect for I/O-bound tasks
+    # Tesseract is CPU-bound, but threading still works due to image I/O
+    results_list = Parallel(
+        n_jobs=n_jobs,
+        backend='threading',
+        verbose=5
+    )(
+        delayed(process_single_page)(page_num)
+        for page_num in range(1, total_pages + 1)
+    )
+    
+    # Organize results
     results = {
         'successful_pages': [],
         'failed_pages': [],
@@ -168,14 +197,8 @@ def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int) -> Dict[str, 
         'total_pages': total_pages
     }
     
-    all_pages = list(range(1, total_pages + 1))
-    
-    for page_num in all_pages:
-        print(f"\nProcessing Page {page_num}...")
-        
-        # Extract text with OCR
-        ocr_result = extract_with_tesseract_ocr(pdf_bytes, page_num)
-        
+    # Process results from parallel execution
+    for page_num, ocr_result in results_list:
         # Store results
         results['all_results'][page_num] = ocr_result
         
@@ -185,15 +208,16 @@ def process_all_pages_with_ocr(pdf_bytes: bytes, total_pages: int) -> Dict[str, 
                 'text': ocr_result['text'],
                 'metrics': ocr_result['metrics']
             })
-            
             metrics = ocr_result['metrics']
-            print(f"  [SUCCESS] - {metrics['total_chars']} chars, {metrics['readable_words']} words, {metrics['confidence_score']:.1f}% confidence")
+            print(f"  ✅ Page {page_num} SUCCESS - {metrics['total_chars']} chars, {metrics['readable_words']} words, {metrics['confidence_score']:.1f}% confidence")
         else:
             results['failed_pages'].append({
                 'page_num': page_num,
                 'error': ocr_result['error']
             })
-            print(f"  [FAILED] - {ocr_result['error']}")
+            print(f"  ❌ Page {page_num} FAILED - {ocr_result['error']}")
+    
+    print(f"\n✅ Parallel Tesseract OCR processing complete: {len(results['successful_pages'])}/{total_pages} pages successful")
     
     return results
 

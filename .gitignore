@@ -4,8 +4,24 @@ backend/.env
 .env
 dump.rdb
 
-# Temporary Eforms folder
-Eform/
+# Temporary Eforms folder (source repo for syncing) - root level only
+/Eform/
+/eforms/
+/eforms-source/
+
+# Temporary Client Form folder (source repo for syncing) - root level only
+/eclient_form/
+/client_form/
 
 # Environment variables
 .env.local
+
+qc-system/*_ocr_output.txt
+qc-system/qc_extraction_content.txt
+qc-system/qc_extraction_results.json
+qc-system/llm_extracted_fields.json
+
+# Policy PDFs (test data)
+policy/*.pdf
+qc-system/*.pdf
+docs/*.pdf

@@ -81,7 +81,7 @@ def save_metadata(metadata: Dict[str, Any]) -> None:
 
 def process_carrier_uploads(
     carriers_data: List[Dict[str, Any]],
-    user_id: str
+    username: str
 ) -> Dict[str, Any]:
     """
     Process multiple carriers and upload their PDFs
@@ -95,7 +95,9 @@ def process_carrier_uploads(
             - liabilityFilename: str
             - liquorPDF: bytes (file content)
             - liquorFilename: str
-        user_id: User ID for tracking
+            - workersCompPDF: bytes (file content)
+            - workersCompFilename: str
+        username: Username for tracking and sheet routing
     
     Returns:
         Success response with all file paths and metadata
@@ -113,7 +115,8 @@ def process_carrier_uploads(
                 "carrierName": carrier_name,
                 "propertyPDF": None,
                 "liabilityPDF": None,
-                "liquorPDF": None
+                "liquorPDF": None,
+                "workersCompPDF": None
             }
             
             # Upload Property PDF if provided
@@ -158,6 +161,20 @@ def process_carrier_uploads(
                     "uploadedAt": datetime.now().isoformat()
                 }
             
+            # Upload Workers Comp PDF if provided
+            if carrier.get('workersCompPDF'):
+                workerscomp_filename = get_unique_filename(carrier_name, 'workerscomp')
+                workerscomp_path = upload_pdf_to_gcs(
+                    carrier['workersCompPDF'],
+                    workerscomp_filename
+                )
+                carrier_info["workersCompPDF"] = {
+                    "filename": workerscomp_filename,
+                    "path": workerscomp_path,
+                    "size": len(carrier['workersCompPDF']),
+                    "uploadedAt": datetime.now().isoformat()
+                }
+            
             uploaded_carriers.append(carrier_info)
         
         # Update metadata file
@@ -171,7 +188,8 @@ def process_carrier_uploads(
         
         upload_record = {
             "uploadId": upload_id,
-            "userId": user_id,
+            "userId": username,
+            "username": username,
             "uploadedAt": datetime.now().isoformat(),
             "totalCarriers": len(uploaded_carriers),
             "totalFiles": total_files,

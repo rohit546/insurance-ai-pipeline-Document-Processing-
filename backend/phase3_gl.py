@@ -2,6 +2,7 @@
 Phase 3 GL: LLM Information Extraction for General Liability
 Extracts 22 specific general liability coverage fields from insurance documents using GPT.
 Works with Google Cloud Storage.
+Uses Joblib for parallel chunk processing.
 """
 import json
 import openai
@@ -11,6 +12,8 @@ from datetime import datetime
 from typing import Dict, Any, List
 from google.cloud import storage
 from dotenv import load_dotenv
+from joblib import Parallel, delayed
+from schemas.gl_schema import GL_FIELDS_SCHEMA, get_gl_field_names, get_gl_required_fields
 
 load_dotenv()
 
@@ -35,6 +38,14 @@ def _download_text_from_gcs(bucket: storage.bucket.Bucket, blob_path: str) -> st
     if not blob.exists():
         return ""
     return blob.download_as_string().decode('utf-8')
+
+
+def _download_json_from_gcs(bucket: storage.bucket.Bucket, blob_path: str) -> Dict[str, Any]:
+    """Download JSON file from GCS"""
+    blob = bucket.blob(blob_path)
+    if not blob.exists():
+        return {}
+    return json.loads(blob.download_as_string().decode('utf-8'))
 
 
 def _upload_json_to_gcs(bucket: storage.bucket.Bucket, blob_path: str, data: Dict[str, Any]) -> None:
@@ -176,8 +187,21 @@ def extract_with_llm(chunk: Dict[str, Any], chunk_num: int, total_chunks: int) -
     
     IMPORTANT: This is chunk {chunk_num} of {total_chunks}. This chunk contains pages {chunk['page_nums']}. 
     
-    For each field you find, look for the nearest page number in the text above it (e.g., "Page 3", "Page 5"). 
-    Use the actual page number from the text. Multiple fields can be on the same page.
+    CRITICAL PAGE NUMBER EXTRACTION:
+    - The document text below has clear page markers: "=== PAGE X (OCR) ===" or "=== PAGE X (PyMuPDF) ==="
+    - For each field you extract, find which "=== PAGE X ===" section it appears in
+    - Extract the EXACT page number X from that section marker
+    - Look BACKWARDS from the field to find the most recent "=== PAGE X ===" marker
+    - DO NOT guess or estimate page numbers - use the exact number from the marker
+    - Multiple fields can be on the same page
+    
+    Example: If you see:
+    === PAGE 7 (OCR) ===
+    General Liability
+    Each Occurrence: $1,000,000
+    General Aggregate: $2,000,000
+    
+    Then those limits should have page: 7 (because they're under "=== PAGE 7 ===" marker)
     
     CRITICAL: Return ONLY valid JSON with this exact format:
     {{
@@ -295,37 +319,15 @@ def extract_with_llm(chunk: Dict[str, Any], chunk_num: int, total_chunks: int) -
 def merge_extraction_results(all_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Merge results from all chunks, prioritizing non-null values"""
     
-    # Define the expected fields for GENERAL LIABILITY INSURANCE
-    expected_fields = [
-        "Each Occurrence/General Aggregate Limits",
-        "Liability Deductible - Per claim or Per Occ basis",
-        "Hired Auto And Non-Owned Auto Liability - Without Delivery Service",
-        "Fuel Contamination coverage limits",
-        "Vandalism coverage",
-        "Garage Keepers Liability",
-        "Employment Practices Liability",
-        "Abuse & Molestation Coverage limits",
-        "Assault & Battery Coverage limits",
-        "Firearms/Active Assailant Coverage limits",
-        "Additional Insured",
-        "Additional Insured (Mortgagee)",
-        "Additional Insured - Jobber",
-        "Exposure",
-        "Rating basis: If Sales - Subject to Audit",
-        "Terrorism",
-        "Personal and Advertising Injury Limit",
-        "Products/Completed Operations Aggregate Limit",
-        "Minimum Earned",
-        "General Liability Premium",
-        "Total Premium (With/Without Terrorism)",
-        "Policy Premium"
-    ]
+    # Use schema to initialize GL fields in correct order
+    # This ensures Google Sheets always has consistent field ordering
+    expected_field_names = get_gl_field_names()  # From GL schema - guaranteed order
     
     merged_result = {}
     
-    # Initialize all expected fields as null
-    for field in expected_fields:
-        merged_result[field] = None
+    # Initialize all expected fields as null (schema order preserved)
+    for field_name in expected_field_names:
+        merged_result[field_name] = None
     
     # Collect all unique fields found by LLM
     all_found_fields = set()
@@ -536,12 +538,23 @@ def process_upload_llm_extraction_gl(upload_id: str) -> Dict[str, Any]:
             # Create chunks (4 pages each)
             chunks = create_chunks(all_pages, chunk_size=4)
             
-            # Process each chunk with LLM
-            chunk_results = []
-            for chunk in chunks:
-                print(f"\nProcessing Chunk {chunk['chunk_num']}/{len(chunks)}...")
-                result = extract_with_llm(chunk, chunk['chunk_num'], len(chunks))
-                chunk_results.append(result)
+            # Process each chunk with LLM - PARALLELIZED for faster processing
+            print(f"\nProcessing {len(chunks)} GL chunks in parallel...")
+            
+            def process_single_chunk(chunk):
+                """Process one chunk - called in parallel"""
+                print(f"  Processing GL Chunk {chunk['chunk_num']}/{len(chunks)}...")
+                return extract_with_llm(chunk, chunk['chunk_num'], len(chunks))
+            
+            # Process all chunks in parallel (n_jobs=-1 uses all available cores)
+            chunk_results = Parallel(
+                n_jobs=-1,
+                backend='threading',
+                verbose=5
+            )(
+                delayed(process_single_chunk)(chunk)
+                for chunk in chunks
+            )
             
             # Merge all results
             print(f"\nMerging results from {len(chunk_results)} chunks...")
@@ -577,23 +590,106 @@ def process_upload_llm_extraction_gl(upload_id: str) -> Dict[str, Any]:
     print("🔍 Checking if all carriers are complete...")
     
     if _check_if_all_carriers_complete_gl(bucket, upload_id):
-        print("🎉 ALL GL CARRIERS COMPLETE! Auto-triggering Google Sheets finalization...")
+        print("🎉 ALL GL CARRIERS COMPLETE! Auto-filling sheet...")
         try:
-            from phase5_googlesheet import finalize_upload_to_sheets
-            sheets_result = finalize_upload_to_sheets(upload_id)
-            if sheets_result.get('success'):
-                print("✅ Google Sheets finalization complete!")
-                result['sheets_push'] = sheets_result
+            import gspread
+            from google.oauth2.service_account import Credentials
+            from pathlib import Path
+            
+            # Get credentials
+            possible_paths = [
+                'credentials/insurance-sheets-474717-7fc3fd9736bc.json',
+                '../credentials/insurance-sheets-474717-7fc3fd9736bc.json',
+            ]
+            creds_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    creds_path = str(Path(path).resolve())
+                    break
+            
+            if creds_path:
+                scope = [
+                    'https://www.googleapis.com/auth/spreadsheets',
+                    'https://www.googleapis.com/auth/drive'
+                ]
+                creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+                client = gspread.authorize(creds)
+                sheet = client.open("Insurance Fields Data").sheet1
+                
+                # Field to Cell mapping for GL
+                field_mapping = {
+                    "Each Occurrence/General Aggregate Limits": "B8",
+                    "Liability Deductible - Per claim or Per Occ basis": "B9",
+                    "Hired Auto And Non-Owned Auto Liability - Without Delivery Service": "B10",
+                    "Fuel Contamination coverage limits": "B11",
+                    "Vandalism coverage": "B12",
+                    "Garage Keepers Liability": "B13",
+                    "Employment Practices Liability": "B14",
+                    "Abuse & Molestation Coverage limits": "B15",
+                    "Assault & Battery Coverage limits": "B16",
+                    "Firearms/Active Assailant Coverage limits": "B17",
+                    "Additional Insured": "B18",
+                    "Additional Insured (Mortgagee)": "B19",
+                    "Additional insured - Jobber": "B20",
+                    "Exposure": "B21",
+                    "Rating basis: If Sales - Subject to Audit": "B22",
+                    "Terrorism": "B23",
+                    "Personal and Advertising Injury Limit": "B24",
+                    "Products/Completed Operations Aggregate Limit": "B25",
+                    "Minimum Earned": "B26",
+                    "General Liability Premium": "B27",
+                    "Total Premium (With/Without Terrorism)": "B28",
+                    "Policy Premium": "B29",
+                    "Contaminated fuel": "B30",
+                    "Liquor Liability": "B31",
+                    "Additional Insured - Managers Or Lessors Of Premises": "B32",
+                }
+                
+                # Load GL extracted data from GCS
+                carriers = record.get('carriers', [])
+                for carrier in carriers:
+                    if carrier.get('liabilityPDF'):
+                        carrier_name = carrier.get('carrierName', 'Unknown')
+                        pdf_path = carrier['liabilityPDF']['path']
+                        timestamp_match = re.search(r'_(\d{8}_\d{6})\.pdf$', pdf_path)
+                        if timestamp_match:
+                            timestamp = timestamp_match.group(1)
+                            safe_name = carrier_name.lower().replace(" ", "_").replace("&", "and")
+                            
+                            # Load GL data from GCS
+                            gl_file = f"phase3/results/{safe_name}_liability_final_validated_fields_{timestamp}.json"
+                            gl_data = _download_json_from_gcs(bucket, gl_file)
+                            
+                            if gl_data:
+                                # Build batch update from extracted data
+                                updates = []
+                                for field_name, cell_ref in field_mapping.items():
+                                    if field_name in gl_data:
+                                        field_info = gl_data[field_name]
+                                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                                        if llm_value:
+                                            updates.append({
+                                                'range': cell_ref,
+                                                'values': [[str(llm_value)]]
+                                            })
+                                
+                                # Single batch update - only values, no formatting
+                                if updates:
+                                    sheet.batch_update(updates)
+                                    print(f"✅ Batch updated {len(updates)} GL fields to sheet")
+                                    result['sheets_push'] = {"success": True, "fields_filled": len(updates)}
+                                else:
+                                    print("⚠️  No GL values to fill")
+                            else:
+                                print(f"⚠️  No GL data found at {gl_file}")
+                        break
             else:
-                print(f"⚠️  Google Sheets finalization had issues: {sheets_result.get('error')}")
-                result['sheets_push_error'] = sheets_result.get('error')
+                print("⚠️  Credentials not found")
         except Exception as e:
-            print(f"❌ Google Sheets finalization failed: {e}")
+            print(f"❌ Sheet fill failed: {e}")
             import traceback
             traceback.print_exc()
-            result['sheets_push_error'] = str(e)
     else:
         print("⏳ Other GL carriers still processing. Waiting for all to complete...")
-        print("💡 Or manually run: /finalize-upload/{uploadId}")
     
     return result
