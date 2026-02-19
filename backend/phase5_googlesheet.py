@@ -8,6 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import os
 import re
+import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from google.cloud import storage
@@ -20,6 +21,30 @@ from schemas.liquor_schema import LIQUOR_FIELDS_SCHEMA, get_liquor_field_names
 load_dotenv()
 
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
+
+# Google Sheets API rate limit: 60 write requests per minute per user
+# We add delays between calls and retry on 429 errors
+SHEETS_WRITE_DELAY = 2  # seconds between write API calls
+
+def _sheets_api_call_with_retry(func, *args, max_retries=5, **kwargs):
+    """
+    Execute a Google Sheets API call with retry on rate limit (429) errors.
+    Uses exponential backoff: 5s, 10s, 20s, 40s, 60s
+    """
+    for attempt in range(max_retries):
+        try:
+            result = func(*args, **kwargs)
+            time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection
+            return result
+        except gspread.exceptions.APIError as e:
+            if hasattr(e, 'response') and e.response.status_code == 429:
+                wait_time = min(5 * (2 ** attempt), 65)  # 5, 10, 20, 40, 65 seconds
+                print(f"  ⏳ Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                time.sleep(wait_time)
+            else:
+                raise
+    # Final attempt without catching
+    return func(*args, **kwargs)
 
 
 def _get_bucket() -> storage.bucket.Bucket:
@@ -874,7 +899,7 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
             clear_ranges.append(f"{col}91:{col}97")  # Premium Breakdown rows
         
         if clear_ranges:
-            sheet.batch_clear(clear_ranges)
+            _sheets_api_call_with_retry(sheet.batch_clear, clear_ranges)
         print("  ✅ Cleared old data (preserved B70-B75 merged cells with template text)")
         
         # STEP 1.5: Update column headers (Row 7) with actual carrier names
@@ -897,7 +922,7 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
             print(f"    ✓ Row 7, Column {column}: '{carrier_name}'")
         
         if header_updates:
-            sheet.batch_update(header_updates)
+            _sheets_api_call_with_retry(sheet.batch_update, header_updates)
             print(f"  ✅ Updated {len(header_updates)} column headers in row 7")
         else:
             print("  ⚠️  No carrier names to update")
@@ -955,7 +980,7 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
                     })
             
             if company_updates:
-                sheet.batch_update(company_updates)
+                _sheets_api_call_with_retry(sheet.batch_update, company_updates)
                 print(f"  ✅ Filled {len(company_updates)} company info rows")
         else:
             print("  ⚠️  No company info to fill")
@@ -1187,7 +1212,7 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
             for u in updates[:5]:
                 print(f"    - {u['range']}: {u['values'][0][0][:50] if u['values'] and u['values'][0] else 'empty'}...")
             
-            sheet.batch_update(updates)
+            _sheets_api_call_with_retry(sheet.batch_update, updates)
             print(f"✅ Batch updated {len(updates)} fields to sheet")
         else:
             print("⚠️  No values to fill")

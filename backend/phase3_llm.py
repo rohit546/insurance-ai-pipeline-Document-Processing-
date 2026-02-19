@@ -94,6 +94,30 @@ def _upload_json_to_gcs(bucket: storage.bucket.Bucket, blob_path: str, data: Dic
     print(f"✅ Uploaded to: gs://{BUCKET_NAME}/{blob_path}")
 
 
+# Google Sheets API rate limit: 60 write requests per minute per user
+SHEETS_WRITE_DELAY = 2  # seconds between write API calls
+
+def _sheets_api_call_with_retry(func, *args, max_retries=5, **kwargs):
+    """
+    Execute a Google Sheets API call with retry on rate limit (429) errors.
+    Uses exponential backoff: 5s, 10s, 20s, 40s, 65s
+    """
+    import gspread
+    for attempt in range(max_retries):
+        try:
+            result = func(*args, **kwargs)
+            time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection
+            return result
+        except gspread.exceptions.APIError as e:
+            if hasattr(e, 'response') and e.response.status_code == 429:
+                wait_time = min(5 * (2 ** attempt), 65)
+                print(f"  ⏳ Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                time.sleep(wait_time)
+            else:
+                raise
+    return func(*args, **kwargs)
+
+
 def reset_user_sheet_to_template(client, username: str):
     """
     Reset user sheet to MAIN SHEET template.
@@ -128,8 +152,10 @@ def reset_user_sheet_to_template(client, username: str):
             user_sheet = spreadsheet.worksheet(username)
             print(f"🗑️  Found old {username} sheet, deleting it...")
             # Delete the old sheet
-            spreadsheet.del_worksheet(user_sheet)
+            _sheets_api_call_with_retry(spreadsheet.del_worksheet, user_sheet)
             print(f"✅ Old sheet deleted")
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"ℹ️  No existing user sheet to delete (first run)")
         except Exception as e:
             print(f"ℹ️  No existing user sheet to delete (first run)")
         
@@ -139,6 +165,8 @@ def reset_user_sheet_to_template(client, username: str):
         import gspread
         from gspread.utils import a1_range_to_grid_range
         
+        time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection before duplicate
+        
         # Use gspread to duplicate the sheet
         # This copies the entire sheet including formatting
         new_sheet = spreadsheet.duplicate_sheet(
@@ -146,6 +174,8 @@ def reset_user_sheet_to_template(client, username: str):
             new_sheet_name=username,
             insert_sheet_index=None
         )
+        
+        time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection after duplicate
         
         print(f"✅ Sheet duplicated: {username}")
         print(f"✅ All formatting PRESERVED (colors, fonts, borders, etc.)")
@@ -1087,16 +1117,20 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
             from google.oauth2.service_account import Credentials
             from pathlib import Path
             
-            # Get credentials
-            possible_paths = [
-                'credentials/insurance-sheets-474717-7fc3fd9736bc.json',
-                '../credentials/insurance-sheets-474717-7fc3fd9736bc.json',
-            ]
-            creds_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    creds_path = str(Path(path).resolve())
-                    break
+            # Get credentials - use environment variable first (Railway), then local paths
+            creds_path = os.getenv('GOOGLE_SHEETS_CREDENTIALS') or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            
+            if not creds_path or not os.path.exists(creds_path):
+                # Fall back to local development paths
+                possible_paths = [
+                    '/app/credentials/gcp-credentials.json',
+                    'credentials/insurance-sheets-474717-7fc3fd9736bc.json',
+                    '../credentials/insurance-sheets-474717-7fc3fd9736bc.json',
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        creds_path = str(Path(path).resolve())
+                        break
             
             if creds_path:
                 scope = [
@@ -1138,7 +1172,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                     
                     # Batch update all at once (maintains sequence)
                     if company_updates:
-                        sheet.batch_update(company_updates)
+                        _sheets_api_call_with_retry(sheet.batch_update, company_updates)
                         print(f"  ✅ Filled {len(company_updates)} company info rows")
                     else:
                         print("  ⚠️  No company info to fill")
@@ -1259,7 +1293,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                 
                 # Clear all ranges in one batch call
                 if clear_ranges:
-                    sheet.batch_clear(clear_ranges)
+                    _sheets_api_call_with_retry(sheet.batch_clear, clear_ranges)
                 print("  ✅ Cleared old data from columns B, C, D")
                 
                 # STEP 2: Assign one column per carrier (for ALL their file types)
@@ -1507,7 +1541,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                 
                 # Batch update sheet (GL + Property + Liquor + Workers Comp + Premium Breakdown combined)
                 if updates:
-                    sheet.batch_update(updates)
+                    _sheets_api_call_with_retry(sheet.batch_update, updates)
                     print(f"✅ Batch updated {len(updates)} fields to sheet (GL + Property + Liquor + Workers Comp + Premium Breakdown)")
                 else:
                     print("⚠️  No values to fill")
