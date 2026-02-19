@@ -34,8 +34,15 @@ def _download_json_from_gcs(bucket: storage.bucket.Bucket, blob_path: str) -> Di
 
 def _get_credentials_path() -> str:
     """Get Google Sheets credentials path"""
-    # Try multiple paths
+    # First check environment variable (Railway deployment)
+    creds_path = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
+    if creds_path and os.path.exists(creds_path):
+        return creds_path
+    
+    # Try multiple local paths
     possible_paths = [
+        '/app/credentials/gcp-credentials.json',
+        'credentials/gcp-credentials.json',
         'credentials/insurance-sheets-474717-7fc3fd9736bc.json',
         '../credentials/insurance-sheets-474717-7fc3fd9736bc.json',
         '../insurance-sheets-474717-7fc3fd9736bc.json',
@@ -45,11 +52,6 @@ def _get_credentials_path() -> str:
     for path in possible_paths:
         if os.path.exists(path):
             return str(Path(path).resolve())
-    
-    # If not found, try to get from environment
-    creds_path = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
-    if creds_path and os.path.exists(creds_path):
-        return creds_path
     
     raise Exception("Google Sheets credentials not found! Please provide credentials.json")
 
@@ -439,19 +441,23 @@ def _apply_sheet_formatting(sheet, all_rows: List[List[str]], has_property: bool
 
 def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Fields Data") -> Dict[str, Any]:
     """
-    Finalize upload: Load ALL carriers from this upload, build side-by-side layout, push ONCE.
-    This prevents individual carriers from overwriting each other.
+    Finalize upload: Load ALL carriers from this upload, fill into MAIN SHEET template.
     
-    Layout:
-    - Company Header: "Mckinney & Co. Insurance"
-    - Property Section: All carriers side-by-side
-    - Liability Section: All carriers side-by-side (if any)
-    - Liquor Section: All carriers side-by-side (if any)
+    TEMPLATE-BASED APPROACH:
+    1. Duplicate MAIN SHEET template to user-specific tab (preserves formatting, logos, disclaimers)
+    2. Clear only data cells (not static content)
+    3. Fill values into exact row/column positions using field→row mappings
+    4. Up to 3 carriers in columns B, C, D
     
-    Each section has:
-    - Section header (e.g., "Property Coverages")
-    - Column headers: Field Name | LLM Value (Carrier1) | Source Page (Carrier1) | ...
-    - Data rows: Field values for each carrier
+    Layout (from MAIN SHEET template):
+    - Row 1: Company Header (Mckinney & Co. Insurance)
+    - Rows 2-6: Named Insured, Mailing Address, Location, Policy Term, Description
+    - Row 7: Section headers with carrier name columns
+    - Rows 8-32: Liability Coverages
+    - Rows 36-42: Liquor Liability
+    - Rows 46-80: Property Coverages
+    - Rows 86-90: Workers Compensation
+    - Rows 91-97: Premium Breakdown
     """
     print(f"\n{'='*80}")
     print(f"FINALIZING UPLOAD: {upload_id}")
@@ -478,7 +484,7 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
     carrier_names = [c.get('carrierName', 'Unknown') for c in carriers]
     print(f"📦 Found {len(carriers)} carriers: {', '.join(carrier_names)}")
     
-    # 2. Load ALL carrier data (property + liability + liquor)
+    # 2. Load ALL carrier data (property + liability + liquor + workers comp)
     all_carrier_data = {}
     
     for carrier in carriers:
@@ -488,11 +494,12 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         all_carrier_data[carrier_name] = {
             'property': None,
             'liability': None,
-            'liquor': None
+            'liquor': None,
+            'workerscomp': None
         }
         
-        # Check for property, liability, and liquor files
-        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF']:
+        # Check for property, liability, liquor, and workers comp files
+        for file_type in ['propertyPDF', 'liabilityPDF', 'liquorPDF', 'workersCompPDF']:
             pdf_info = carrier.get(file_type)
             if not pdf_info or not pdf_info.get('path'):
                 continue
@@ -506,6 +513,9 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
             
             timestamp = timestamp_match.group(1)
             type_short = file_type.replace('PDF', '').lower()
+            # Handle workersCompPDF -> workerscomp
+            if type_short == 'workerscomp':
+                type_short = 'workerscomp'
             
             # Construct path to final validated fields
             final_file_path = f"phase3/results/{safe_name}_{type_short}_final_validated_fields_{timestamp}.json"
@@ -535,174 +545,521 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         client = gspread.authorize(creds)
         print("✅ Connected to Google Sheets!")
         
-        # 4. Open/create sheet
+        # Get username from metadata for user-specific tab
+        username = upload_record.get('username', 'default')
+        print(f"📋 Using user-specific sheet tab: '{username}'")
+        
+        # 4. Open spreadsheet and select user-specific tab
         sheet = None
         try:
-            print(f"🔍 Looking for sheet: {sheet_name}")
-            sheet = client.open(sheet_name).sheet1
-            print(f"✅ Opened existing sheet: {sheet_name}")
+            print(f"🔍 Looking for spreadsheet: {sheet_name}")
+            spreadsheet = client.open(sheet_name)
+            print(f"✅ Opened existing spreadsheet: {sheet_name}")
+            
+            # Try to open user-specific tab
+            try:
+                sheet = spreadsheet.worksheet(username)
+                print(f"✅ Opened user tab: {username}")
+            except gspread.exceptions.WorksheetNotFound:
+                print(f"⚠️  User tab '{username}' not found. Falling back to MAIN SHEET")
+                sheet = spreadsheet.sheet1
+                
         except gspread.exceptions.SpreadsheetNotFound:
-            print(f"⚠️  Sheet not found, trying alternative approach...")
+            print(f"⚠️  Spreadsheet not found, trying alternative approach...")
             spreadsheets = client.openall()
             for ss in spreadsheets:
                 if sheet_name.lower() in ss.title.lower():
-                    sheet = ss.sheet1
-                    print(f"✅ Found matching sheet: {ss.title}")
+                    spreadsheet = ss
+                    print(f"✅ Found matching spreadsheet: {ss.title}")
+                    
+                    # Try to open user-specific tab
+                    try:
+                        sheet = spreadsheet.worksheet(username)
+                        print(f"✅ Opened user tab: {username}")
+                    except gspread.exceptions.WorksheetNotFound:
+                        print(f"⚠️  User tab '{username}' not found. Falling back to MAIN SHEET")
+                        sheet = spreadsheet.sheet1
                     break
-            
-            if not sheet:
-                print(f"📝 Creating new sheet: {sheet_name}")
-                spreadsheet = client.create(sheet_name)
-                sheet = spreadsheet.sheet1
-                print(f"✅ Created new sheet: {sheet_name}")
         
         if not sheet:
-            raise Exception(f"Could not open or create sheet '{sheet_name}'")
+            raise Exception(f"Could not open sheet or find tab '{username}' in '{sheet_name}'")
         
-        # 5. Clear sheet ONCE
-        sheet.clear()
-        print("✅ Cleared existing data")
+        # 5. CRITICAL: Reset user sheet to MAIN SHEET template (preserves formatting!)
+        from phase3_llm import reset_user_sheet_to_template
+        print(f"\n{'='*80}")
+        print(f"TEMPLATE RESET PROCEDURE FOR USER: {username}")
+        print(f"{'='*80}")
+        sheet = reset_user_sheet_to_template(client, username)
+        print(f"{'='*80}\n")
         
-        # 6. Build complete layout
-        print(f"\n📊 Building side-by-side layout...")
-        all_rows = []
+        # 6. Use row mappings to fill data into exact template positions
+        import json
         
-        # Company header
-        all_rows.append(["Mckinney & Co. Insurance"])
+        # GL Field to Row mapping (matches MAIN SHEET template)
+        gl_field_rows = {
+            "Each Occurrence/General Aggregate Limits": 8,
+            "Liability Deductible - Per claim or Per Occ basis": 9,
+            "Hired Auto And Non-Owned Auto Liability - Without Delivery Service": 10,
+            "Fuel Contamination coverage limits": 11,
+            "Vandalism coverage": 12,
+            "Garage Keepers Liability": 13,
+            "Employment Practices Liability": 14,
+            "Abuse & Molestation Coverage limits": 15,
+            "Assault & Battery Coverage limits": 16,
+            "Firearms/Active Assailant Coverage limits": 17,
+            "Additional Insured": 18,
+            "Additional Insured (Mortgagee)": 19,
+            "Additional insured - Jobber": 20,
+            "Exposure": 21,
+            "Rating basis: If Sales - Subject to Audit": 22,
+            "Terrorism": 23,
+            "Personal and Advertising Injury Limit": 24,
+            "Products/Completed Operations Aggregate Limit": 25,
+            "Minimum Earned": 26,
+            "General Liability Premium": 27,
+            "Total Premium (With/Without Terrorism)": 28,
+            "Policy Premium": 29,
+            "Contaminated fuel": 30,
+            "Liquor Liability": 31,
+            "Additional Insured - Managers Or Lessors Of Premises": 32,
+        }
         
-        # PROPERTY SECTION
-        has_property = any(all_carrier_data[c].get('property') for c in carrier_names if c in all_carrier_data)
+        # Property Field to Row mapping (matches MAIN SHEET template)
+        property_field_rows = {
+            "Construction Type": 46,
+            "Valuation and Coinsurance": 47,
+            "Cosmetic Damage": 48,
+            "Building": 49,
+            "Pumps": 50,
+            "Canopy": 51,
+            "Roof Surfacing": 53,
+            "Roof Surfacing -Limitation": 54,
+            "Business Personal Property": 55,
+            "Business Income": 56,
+            "Business Income with Extra Expense": 57,
+            "Equipment Breakdown": 58,
+            "Outdoor Signs": 59,
+            "Signs Within 1,000 Feet to Premises": 60,
+            "Employee Dishonesty": 61,
+            "Money & Securities": 62,
+            "Money and Securities (Inside; Outside)": 63,
+            "Spoilage": 64,
+            "Theft": 65,
+            "Theft Sublimit": 66,
+            "Theft Deductible": 67,
+            "Windstorm or Hail Deductible": 68,
+            "Named Storm Deductible": 69,
+            "Wind and Hail and Named Storm exclusion": 70,
+            "All Other Perils Deductible": 71,
+            "Fire Station Alarm": 72,
+            "Burglar Alarm": 73,
+            "Loss Payee": 74,
+            "Forms and Exclusions": 75,
+            "Requirement: Protective Safeguards": 76,
+            "Terrorism": 77,
+            "Subjectivity:": 78,
+            "Minimum Earned": 79,
+            "Total Premium (With/Without Terrorism)": 80,
+        }
+          
+        # Liquor Field to Row mapping (matches MAIN SHEET template)
+        liquor_field_rows = {
+            "Each Occurrence/General Aggregate Limits": 36,
+            "Sales - Subject to Audit": 37,
+            "Assault & Battery/Firearms/Active Assailant": 38,
+            "Requirements": 39,
+            "If any subjectivities in quote please add": 40,
+            "Minimum Earned": 41,
+            "Total Premium (With/Without Terrorism)": 42,
+            "Liquor Premium": 42,
+            "Policy Premium": 42,
+        }
         
-        if has_property:
-            print(f"  📋 Building Property section...")
-            all_rows.append(["Property Coverages"])
-            all_rows.append(["=" * 20])
-            all_rows.append([])  # Spacing
-            
-            # Property column headers
-            property_header = ["Field Name"]
-            for carrier_name in carrier_names:
-                property_header.extend([f"LLM Value ({carrier_name})", f"Source Page ({carrier_name})"])
-            all_rows.append(property_header)
-            
-            # Property data rows
-            property_fields = _get_all_unique_fields(all_carrier_data, carrier_names, 'property')
-            print(f"    Found {len(property_fields)} unique property fields")
-            
-            for field_name in property_fields:
-                row = [field_name]
-                for carrier_name in carrier_names:
-                    property_data = all_carrier_data.get(carrier_name, {}).get('property', {})
-                    if property_data and field_name in property_data:
-                        field_data = property_data[field_name]
-                        row.extend([
-                            field_data.get('llm_value', ''),
-                            field_data.get('source_page', '')
-                        ])
-                    else:
-                        row.extend(['', ''])
-                all_rows.append(row)
-            
-            all_rows.append([])  # Spacing
-            all_rows.append([])
+        # Workers Comp Field to Row mapping (matches MAIN SHEET template)
+        workers_comp_field_rows = {
+            "Limits": 86,
+            "FEIN #": 87,
+            "Payroll - Subject to Audit": 88,
+            "Excluded Officer": 89,
+            "If Opting out from Workers Compensation Coverage": 89,
+            "Total Premium": 90,
+            "Workers Compensation Premium": 90,
+            "Policy Premium": 90,
+        }
         
-        # LIABILITY SECTION
-        has_liability = any(all_carrier_data[c].get('liability') for c in carrier_names if c in all_carrier_data)
+        # Columns for each carrier: B (Option 1), C (Option 2), D (Option 3)
+        columns = ['B', 'C', 'D']
         
-        if has_liability:
-            print(f"  📋 Building Liability section...")
-            all_rows.append(["General Liability Coverages"])
-            all_rows.append(["=" * 20])
-            all_rows.append([])
+        # STEP 1: Clear old data from data columns (B, C, D) — NOT static content
+        # PRESERVE: Row 70-75 Column B (merged cells with template text)
+        print("  🧹 Clearing old data from columns B, C, D...")
+        clear_ranges = []
+        for col in columns:
+            clear_ranges.append(f"{col}8:{col}32")   # GL rows
+            clear_ranges.append(f"{col}36:{col}42")  # Liquor rows
             
-            # Liability column headers
-            liability_header = ["Field Name"]
-            for carrier_name in carrier_names:
-                liability_header.extend([f"LLM Value ({carrier_name})", f"Source Page ({carrier_name})"])
-            all_rows.append(liability_header)
+            # Property rows - but preserve specific cells in Column B
+            if col == 'B':
+                # Column B: Clear 46-69, 76-79, 80 (skip 70-75 to preserve merged cells)
+                clear_ranges.append(f"{col}46:{col}69")
+                # SKIP: B70-B75 (preserve merged cells: Wind/Hail exclusion, Fire Alarm, Burglar Alarm)
+                clear_ranges.append(f"{col}76:{col}79")
+                clear_ranges.append(f"{col}80:{col}80")
+            else:
+                # Columns C and D: Clear all 46-80
+                clear_ranges.append(f"{col}46:{col}80")
             
-            # Liability data rows
-            liability_fields = _get_all_unique_fields(all_carrier_data, carrier_names, 'liability')
-            print(f"    Found {len(liability_fields)} unique liability fields")
-            
-            for field_name in liability_fields:
-                row = [field_name]
-                for carrier_name in carrier_names:
-                    liability_data = all_carrier_data.get(carrier_name, {}).get('liability', {})
-                    if liability_data and field_name in liability_data:
-                        field_data = liability_data[field_name]
-                        row.extend([
-                            field_data.get('llm_value', ''),
-                            field_data.get('source_page', '')
-                        ])
-                    else:
-                        row.extend(['', ''])
-                all_rows.append(row)
-            
-            all_rows.append([])  # Spacing
-            all_rows.append([])
+            clear_ranges.append(f"{col}86:{col}90")  # Workers Comp rows
+            clear_ranges.append(f"{col}91:{col}97")  # Premium Breakdown rows
         
-        # LIQUOR SECTION
-        has_liquor = any(all_carrier_data[c].get('liquor') for c in carrier_names if c in all_carrier_data)
+        if clear_ranges:
+            sheet.batch_clear(clear_ranges)
+        print("  ✅ Cleared old data (preserved B70-B75 merged cells with template text)")
         
-        if has_liquor:
-            print(f"  📋 Building Liquor section...")
-            all_rows.append(["Liquor/Bar Insurance Coverages"])
-            all_rows.append(["=" * 20])
-            all_rows.append([])
-            
-            # Liquor column headers
-            liquor_header = ["Field Name"]
-            for carrier_name in carrier_names:
-                liquor_header.extend([f"LLM Value ({carrier_name})", f"Source Page ({carrier_name})"])
-            all_rows.append(liquor_header)
-            
-            # Liquor data rows
-            liquor_fields = _get_all_unique_fields(all_carrier_data, carrier_names, 'liquor')
-            print(f"    Found {len(liquor_fields)} unique liquor fields")
-            
-            for field_name in liquor_fields:
-                row = [field_name]
-                for carrier_name in carrier_names:
-                    liquor_data = all_carrier_data.get(carrier_name, {}).get('liquor', {})
-                    if liquor_data and field_name in liquor_data:
-                        field_data = liquor_data[field_name]
-                        row.extend([
-                            field_data.get('llm_value', ''),
-                            field_data.get('source_page', '')
-                        ])
-                    else:
-                        row.extend(['', ''])
-                all_rows.append(row)
-            
-            all_rows.append([])  # Spacing
-            all_rows.append([])
+        # STEP 1.5: Update column headers (Row 7) with actual carrier names
+        print("  📝 Updating column headers with carrier names...")
+        header_updates = []
         
-        # 7. Push EVERYTHING in ONE batch
-        print(f"\n📤 Pushing {len(all_rows)} rows to Google Sheets...")
-        update_response = sheet.update('A1', all_rows)
-        print(f"✅ Google Sheets update response: {update_response}")
+        for carrier_index, carrier in enumerate(carriers):
+            if carrier_index >= 3:  # Max 3 carriers
+                break
+            
+            carrier_name = carrier.get('carrierName', f'Option {carrier_index + 1}')
+            column = columns[carrier_index]
+            
+            header_updates.append({
+                'range': f"{column}7",
+                'values': [[carrier_name]]
+            })
+            print(f"    ✏ Row 7, Column {column}: '{carrier_name}'")
         
-        # 8. Apply formatting (headers, colors, etc.)
-        print(f"\n🎨 Applying formatting to headers...")
-        _apply_sheet_formatting(sheet, all_rows, has_property, has_liability, has_liquor)
-        print(f"✅ Formatting applied!")
+        if header_updates:
+            sheet.batch_update(header_updates)
+            print(f"  ✅ Updated {len(header_updates)} column headers in row 7")
+        else:
+            print("  ⚠️  No carrier names to update")
+        
+        # STEP 2: Fill company information (rows 2-6)
+        print("  📝 Filling company information...")
+        company_info = None
+        company_info_path = f"phase3/results/{upload_id}_company_info.json"
+        print(f"  🔍 Looking for company info at: {company_info_path}")
+        
+        blob = bucket.blob(company_info_path)
+        if blob.exists():
+            print(f"  ✅ Found company info file")
+            try:
+                company_info = json.loads(blob.download_as_string().decode('utf-8'))
+                print(f"  ✅ Loaded company info: {list(company_info.keys()) if company_info else 'empty'}")
+            except Exception as e:
+                print(f"  ❌ Failed to parse company info: {e}")
+        else:
+            print(f"  ⚠️  Company info file NOT FOUND at: {company_info_path}")
+            # List what files actually exist in phase3/results/ for this upload
+            print(f"  🔍 Checking what Phase 3 files exist for upload {upload_id}...")
+            phase3_files = list(bucket.list_blobs(prefix=f'phase3/results/{upload_id}'))
+            if phase3_files:
+                print(f"  📂 Found {len(phase3_files)} Phase 3 files for this upload:")
+                for f in phase3_files[:10]:
+                    print(f"    - {f.name}")
+            else:
+                print(f"  ⚠️  No Phase 3 files found with prefix: phase3/results/{upload_id}")
+        
+        if company_info:
+            company_updates = []
+            company_fields = [
+                ("Named Insured", 2),
+                ("Mailing Address", 3),
+                ("Location Address", 4),
+                ("Policy Term", 5),
+                ("Description of Business", 6),
+            ]
+            
+            for field_name, row_num in company_fields:
+                if field_name in company_info and company_info[field_name]:
+                    full_text = f"{field_name}: {company_info[field_name]}"
+                    company_updates.append({
+                        'range': f"A{row_num}",
+                        'values': [[full_text]]
+                    })
+            
+            if company_updates:
+                sheet.batch_update(company_updates)
+                print(f"  ✅ Filled {len(company_updates)} company info rows")
+        else:
+            print("  ⚠️  No company info to fill")
+        
+        # STEP 3: Fill data for each carrier into template positions
+        updates = []
+        
+        print(f"  📈 Preparing field updates for {len(carriers)} carriers...")
+        print(f"  📦 Loaded carrier data: {list(all_carrier_data.keys())}")
+        
+        for carrier_index, carrier in enumerate(carriers):
+            if carrier_index >= 3:  # Max 3 carriers
+                break
+            
+            carrier_name = carrier.get('carrierName', 'Unknown')
+            column = columns[carrier_index]  # B, C, or D
+            
+            print(f"  🔍 Processing carrier {carrier_index + 1}: {carrier_name} → Column {column}")
+            
+            # Process GL data
+            if carrier.get('liabilityPDF') and carrier_name in all_carrier_data and all_carrier_data[carrier_name].get('liability'):
+                gl_data = all_carrier_data[carrier_name]['liability']
+                print(f"    ✏ GL data found: {len(gl_data)} fields")
+                gl_updates_before = len(updates)
+                
+                for field_name, row_num in gl_field_rows.items():
+                    if row_num == 28:
+                        continue  # Handle Total Premium separately
+                    
+                    if field_name in gl_data:
+                        field_info = gl_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}{row_num}",
+                                'values': [[str(llm_value)]]
+                            })
+                
+                # Handle row 28 (Total Premium) — multiple possible field names
+                for field_name in ["Total Premium (With/Without Terrorism)", "Total GL Premium", "Total Premium GL (With/Without Terrorism)"]:
+                    if field_name in gl_data:
+                        field_info = gl_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}28",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                # Also copy GL premium to Premium Breakdown row 91
+                for field_name in ["Total Premium (With/Without Terrorism)", "Total GL Premium", "Total Premium GL (With/Without Terrorism)"]:
+                    if field_name in gl_data:
+                        field_info = gl_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}91",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                gl_updates_added = len(updates) - gl_updates_before
+                print(f"    ✏ Added {gl_updates_added} GL fields to updates")
+            else:
+                if carrier.get('liabilityPDF'):
+                    print(f"    ⚠️  GL PDF exists but no GL data loaded for {carrier_name}")
+                else:
+                    print(f"    - No GL PDF for {carrier_name}")
+            
+            # Process Property data
+            if carrier.get('propertyPDF') and carrier_name in all_carrier_data and all_carrier_data[carrier_name].get('property'):
+                property_data = all_carrier_data[carrier_name]['property']
+                print(f"    ✏ Property data found: {len(property_data)} fields")
+                prop_updates_before = len(updates)
+                
+                for field_name, row_num in property_field_rows.items():
+                    if row_num == 80:
+                        continue  # Handle Total Premium separately
+                    
+                    if field_name in property_data:
+                        field_info = property_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}{row_num}",
+                                'values': [[str(llm_value)]]
+                            })
+                
+                # Handle row 80 (Total Property Premium)
+                for field_name in ["Total Premium (With/Without Terrorism)", "Total Property Premium", "Total Premium Property (With/Without Terrorism)"]:
+                    if field_name in property_data:
+                        field_info = property_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}80",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                # Also copy Property premium to Premium Breakdown row 92
+                for field_name in ["Total Premium (With/Without Terrorism)", "Total Property Premium", "Total Premium Property (With/Without Terrorism)"]:
+                    if field_name in property_data:
+                        field_info = property_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}92",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                prop_updates_added = len(updates) - prop_updates_before
+                print(f"    ✏ Added {prop_updates_added} Property fields to updates")
+            else:
+                if carrier.get('propertyPDF'):
+                    print(f"    ⚠️  Property PDF exists but no Property data loaded for {carrier_name}")
+                else:
+                    print(f"    - No Property PDF for {carrier_name}")
+            
+            # Process Liquor data
+            if carrier.get('liquorPDF') and carrier_name in all_carrier_data and all_carrier_data[carrier_name].get('liquor'):
+                liquor_data = all_carrier_data[carrier_name]['liquor']
+                print(f"    ✏ Liquor data found: {len(liquor_data)} fields")
+                liq_updates_before = len(updates)
+                
+                for field_name, row_num in liquor_field_rows.items():
+                    if row_num == 42:
+                        continue  # Handle Total Premium separately
+                    
+                    if field_name in liquor_data:
+                        field_info = liquor_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}{row_num}",
+                                'values': [[str(llm_value)]]
+                            })
+                
+                # Handle row 42 (Total Liquor Premium)
+                for field_name in ["Total Premium (With/Without Terrorism)", "Total Liquor Premium", "Liquor Premium", "Policy Premium", "Total Premium Liquor (With/Without Terrorism)"]:
+                    if field_name in liquor_data:
+                        field_info = liquor_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}42",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                # Also copy Liquor premium to Premium Breakdown row 94
+                for field_name in ["Total Premium (With/Without Terrorism)", "Total Liquor Premium", "Total Premium Liquor (With/Without Terrorism)"]:
+                    if field_name in liquor_data:
+                        field_info = liquor_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}94",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                liq_updates_added = len(updates) - liq_updates_before
+                print(f"    ✏ Added {liq_updates_added} Liquor fields to updates")
+            else:
+                if carrier.get('liquorPDF'):
+                    print(f"    ⚠️  Liquor PDF exists but no Liquor data loaded for {carrier_name}")
+                else:
+                    print(f"    - No Liquor PDF for {carrier_name}")
+            
+            # Process Workers Comp data
+            if carrier.get('workersCompPDF') and carrier_name in all_carrier_data and all_carrier_data[carrier_name].get('workerscomp'):
+                workerscomp_data = all_carrier_data[carrier_name]['workerscomp']
+                print(f"    ✏ Workers Comp data found: {len(workerscomp_data)} fields")
+                wc_updates_before = len(updates)
+                
+                for field_name, row_num in workers_comp_field_rows.items():
+                    if row_num == 90:
+                        continue  # Handle Total Premium separately
+                    
+                    if field_name in workerscomp_data:
+                        field_info = workerscomp_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}{row_num}",
+                                'values': [[str(llm_value)]]
+                            })
+                
+                # Handle row 90 (Total Workers Comp Premium)
+                for field_name in ["Total Premium", "Workers Compensation Premium", "Policy Premium"]:
+                    if field_name in workerscomp_data:
+                        field_info = workerscomp_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}90",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                # Also copy Workers Comp premium to Premium Breakdown row 95
+                for field_name in ["Total Premium", "Workers Compensation Premium"]:
+                    if field_name in workerscomp_data:
+                        field_info = workerscomp_data[field_name]
+                        llm_value = field_info.get("llm_value", "") if isinstance(field_info, dict) else field_info
+                        if llm_value:
+                            updates.append({
+                                'range': f"{column}95",
+                                'values': [[str(llm_value)]]
+                            })
+                            break
+                
+                wc_updates_added = len(updates) - wc_updates_before
+                print(f"    ✏ Added {wc_updates_added} Workers Comp fields to updates")
+            else:
+                if carrier.get('workersCompPDF'):
+                    print(f"    ⚠️  Workers Comp PDF exists but no Workers Comp data loaded for {carrier_name}")
+                else:
+                    print(f"    - No Workers Comp PDF for {carrier_name}")
+        
+        # STEP 4: Batch update all data
+        print(f"\n  📈 Total updates prepared: {len(updates)}")
+        if updates:
+            # Show sample of what will be updated
+            print(f"  📝 Sample updates (first 5):")
+            for u in updates[:5]:
+                print(f"    - {u['range']}: {u['values'][0][0][:50] if u['values'] and u['values'][0] else 'empty'}...")
+            
+            sheet.batch_update(updates)
+            print(f"✅ Batch updated {len(updates)} fields to sheet")
+        else:
+            print("⚠️  No values to fill")
+            print("  🔍 Debugging why updates are empty:")
+            print(f"    - Carriers in metadata: {[c.get('carrierName') for c in carriers]}")
+            print(f"    - Carriers with loaded data: {list(all_carrier_data.keys())}")
+            for carrier in carriers:
+                carrier_name = carrier.get('carrierName', 'Unknown')
+                print(f"    - {carrier_name}:")
+                print(f"      * Has liabilityPDF: {bool(carrier.get('liabilityPDF'))}")
+                print(f"      * Has propertyPDF: {bool(carrier.get('propertyPDF'))}")
+                print(f"      * Has liquorPDF: {bool(carrier.get('liquorPDF'))}")
+                if carrier_name in all_carrier_data:
+                    print(f"      * Loaded data: {list(all_carrier_data[carrier_name].keys())}")
+                else:
+                    print(f"      * ⚠️  No data loaded for this carrier")
+        
+        # Get Google Sheet URL
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}/edit#gid={sheet.id}"
         
         print(f"\n{'='*80}")
         print(f"✅ FINALIZATION COMPLETE!")
         print(f"{'='*80}")
         print(f"✅ Upload ID: {upload_id}")
         print(f"✅ Carriers: {', '.join(carrier_names)}")
-        print(f"✅ Total rows: {len(all_rows)}")
+        print(f"✅ Fields updated: {len(updates)}")
         print(f"✅ Sheet: {sheet_name}")
+        print(f"✅ User tab: {username}")
+        print(f"🔗 Google Sheet URL: {sheet_url}")
         print(f"{'='*80}\n")
+        
+        has_property = any(all_carrier_data[c].get('property') for c in carrier_names if c in all_carrier_data)
+        has_liability = any(all_carrier_data[c].get('liability') for c in carrier_names if c in all_carrier_data)
+        has_liquor = any(all_carrier_data[c].get('liquor') for c in carrier_names if c in all_carrier_data)
         
         return {
             "success": True,
             "uploadId": upload_id,
             "carriers": carrier_names,
-            "rows": len(all_rows),
+            "fieldsUpdated": len(updates),
             "sheetName": sheet_name,
+            "username": username,
+            "sheetUrl": sheet_url,
             "sections": {
                 "property": has_property,
                 "liability": has_liability,
