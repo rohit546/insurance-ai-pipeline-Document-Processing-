@@ -98,17 +98,23 @@ def read_root():
     return {"message": "Hello, World! Insurance PDF Analysis API"}
 
 @app.post("/register/")
-def register_endpoint(username: str = Form(...), password: str = Form(...)):
-    """Register new user with username"""
-    result = register(username, password)
+def register_endpoint(email: str = Form(None), username: str = Form(None), password: str = Form(...)):
+    """Register new user with email/username"""
+    user_identifier = email or username
+    if not user_identifier:
+        raise HTTPException(status_code=400, detail="Email or username is required")
+    result = register(user_identifier, password)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 @app.post("/login/")
-def login_endpoint(username: str = Form(...), password: str = Form(...)):
-    """Login user with username"""
-    result = login(username, password)
+def login_endpoint(email: str = Form(None), username: str = Form(None), password: str = Form(...)):
+    """Login user with email/username"""
+    user_identifier = email or username
+    if not user_identifier:
+        raise HTTPException(status_code=400, detail="Email or username is required")
+    result = login(user_identifier, password)
     if "error" in result:
         raise HTTPException(status_code=401, detail=result["error"])
     return result
