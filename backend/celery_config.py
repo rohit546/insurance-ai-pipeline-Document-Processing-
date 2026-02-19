@@ -16,6 +16,24 @@ if ":6380" in REDIS_URL:
 broker_url = REDIS_URL
 result_backend = REDIS_URL
 
+# Connection retry settings (fixes Railway Redis proxy timeouts)
+broker_connection_retry_on_startup = True  # Retry connection on startup (Celery 6+ compat)
+broker_connection_retry = True
+broker_connection_max_retries = 10
+broker_connection_timeout = 30  # seconds
+
+# Transport options - socket-level timeouts for Railway proxy
+broker_transport_options = {
+    'socket_timeout': 30,
+    'socket_connect_timeout': 30,
+    'retry_on_timeout': True,
+    'socket_keepalive': True,
+}
+
+# Disable mingle (neighbor discovery) - this is what causes the timeout crash
+worker_enable_remote_control = True
+worker_hijack_root_logger = False
+
 # Task settings
 task_serializer = "json"
 accept_content = ["json"]

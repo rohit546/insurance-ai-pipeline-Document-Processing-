@@ -24,14 +24,15 @@ else
 fi
 
 # Start Celery workers with queue-based routing
+# --without-mingle disables neighbor discovery (prevents Redis timeout during startup)
 # Worker 1: QC queue (max 1 concurrent QC task)
 echo "[OK] Starting Celery QC worker (queue: qc, concurrency: 1)..."
-celery -A tasks worker --loglevel=info --concurrency=1 --queues=qc -n qc_worker@%h &
+celery -A tasks worker --loglevel=info --concurrency=1 --queues=qc --without-mingle --without-gossip -n qc_worker@%h &
 QC_WORKER_PID=$!
 
 # Worker 2: Summary queue (max 1 concurrent Summary task)
 echo "[OK] Starting Celery Summary worker (queue: summary, concurrency: 1)..."
-celery -A tasks worker --loglevel=info --concurrency=1 --queues=summary -n summary_worker@%h &
+celery -A tasks worker --loglevel=info --concurrency=1 --queues=summary --without-mingle --without-gossip -n summary_worker@%h &
 SUMMARY_WORKER_PID=$!
 
 echo "[OK] Queue-based worker architecture initialized:"
