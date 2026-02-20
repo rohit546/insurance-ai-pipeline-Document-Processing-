@@ -16,6 +16,8 @@ from typing import Dict, Any, List, Optional
 from google.cloud import storage
 from dotenv import load_dotenv
 from joblib import Parallel, delayed
+import gspread
+from google.oauth2.service_account import Credentials
 from schemas.property_schema import PROPERTY_FIELDS_SCHEMA, get_field_names, get_required_fields
 
 load_dotenv()
@@ -102,7 +104,6 @@ def _sheets_api_call_with_retry(func, *args, max_retries=5, **kwargs):
     Execute a Google Sheets API call with retry on rate limit (429) errors.
     Uses exponential backoff: 5s, 10s, 20s, 40s, 65s
     """
-    import gspread
     for attempt in range(max_retries):
         try:
             result = func(*args, **kwargs)
@@ -162,8 +163,6 @@ def reset_user_sheet_to_template(client, username: str):
         # Step 3: Duplicate MAIN SHEET to user sheet
         # This preserves ALL formatting, colors, fonts, borders, etc!
         print(f"📋 Duplicating MAIN SHEET template with formatting...")
-        import gspread
-        from gspread.utils import a1_range_to_grid_range
         
         time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection before duplicate
         
@@ -1113,8 +1112,6 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
         
         # Auto-fill GL data to sheet
         try:
-            import gspread
-            from google.oauth2.service_account import Credentials
             from pathlib import Path
             
             # Get credentials - use environment variable first (Railway), then local paths
