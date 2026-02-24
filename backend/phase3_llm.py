@@ -155,10 +155,11 @@ def reset_user_sheet_to_template(client, username: str):
             # Delete the old sheet
             _sheets_api_call_with_retry(spreadsheet.del_worksheet, user_sheet)
             print(f"✅ Old sheet deleted")
+            time.sleep(SHEETS_WRITE_DELAY)  # Wait for delete to propagate
         except gspread.exceptions.WorksheetNotFound:
             print(f"ℹ️  No existing user sheet to delete (first run)")
         except Exception as e:
-            print(f"ℹ️  No existing user sheet to delete (first run)")
+            print(f"ℹ️  Could not delete user sheet: {e}")
         
         # Step 3: Duplicate MAIN SHEET to user sheet
         # This preserves ALL formatting, colors, fonts, borders, etc!
@@ -166,13 +167,32 @@ def reset_user_sheet_to_template(client, username: str):
         
         time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection before duplicate
         
-        # Use gspread to duplicate the sheet
-        # This copies the entire sheet including formatting
-        new_sheet = spreadsheet.duplicate_sheet(
-            source_sheet_id=template_sheet_id,
-            new_sheet_name=username,
-            insert_sheet_index=None
-        )
+        # Retry logic: if sheet already exists (race condition), delete and retry
+        max_duplicate_retries = 3
+        new_sheet = None
+        for dup_attempt in range(max_duplicate_retries):
+            try:
+                new_sheet = spreadsheet.duplicate_sheet(
+                    source_sheet_id=template_sheet_id,
+                    new_sheet_name=username,
+                    insert_sheet_index=None
+                )
+                break  # Success
+            except gspread.exceptions.APIError as e:
+                error_msg = str(e)
+                if 'already exists' in error_msg:
+                    print(f"⚠️  Sheet '{username}' still exists (race condition), deleting and retrying... (attempt {dup_attempt + 1})")
+                    try:
+                        existing = spreadsheet.worksheet(username)
+                        _sheets_api_call_with_retry(spreadsheet.del_worksheet, existing)
+                        time.sleep(SHEETS_WRITE_DELAY)
+                    except Exception:
+                        time.sleep(3)  # Wait and hope it resolves
+                else:
+                    raise  # Non-recoverable error
+        
+        if new_sheet is None:
+            raise Exception(f"Failed to create sheet '{username}' after {max_duplicate_retries} retries")
         
         time.sleep(SHEETS_WRITE_DELAY)  # Rate limit protection after duplicate
         

@@ -8,6 +8,7 @@ import tempfile
 import secrets
 from datetime import datetime
 import time
+import threading
 from google.api_core.exceptions import ServiceUnavailable, InternalServerError
 from auth import register, login
 from database import get_all_users, user_exists_by_email, create_user, get_user
@@ -629,13 +630,35 @@ def get_upload_status(upload_id: str):
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 
+# Lock to prevent concurrent finalize calls for the same upload
+_finalize_locks: dict[str, threading.Lock] = {}
+_finalize_locks_guard = threading.Lock()
+
 @app.get("/finalize-upload")
 def finalize_upload(uploadId: str, sheetName: str = "Insurance Fields Data"):
     """
     Finalize upload: Push ALL carriers to Google Sheets in side-by-side format.
     Should be called AFTER all carriers complete Phase 3.
     This prevents individual carriers from overwriting each other.
+    
+    Uses a per-upload lock to prevent concurrent calls from corrupting Google Sheets.
     """
+    # Get or create a lock for this upload
+    with _finalize_locks_guard:
+        if uploadId not in _finalize_locks:
+            _finalize_locks[uploadId] = threading.Lock()
+        lock = _finalize_locks[uploadId]
+    
+    # Try to acquire the lock - if already running, reject immediately
+    acquired = lock.acquire(blocking=False)
+    if not acquired:
+        print(f"⚠️  finalize-upload already in progress for {uploadId}, rejecting duplicate call")
+        return {
+            "success": False,
+            "error": "Finalization already in progress for this upload. Please wait.",
+            "inProgress": True
+        }
+    
     try:
         from phase5_googlesheet import finalize_upload_to_sheets
         result = finalize_upload_to_sheets(uploadId, sheetName)
@@ -649,6 +672,11 @@ def finalize_upload(uploadId: str, sheetName: str = "Insurance Fields Data"):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+    finally:
+        lock.release()
+        # Clean up the lock entry
+        with _finalize_locks_guard:
+            _finalize_locks.pop(uploadId, None)
 
 
 # ============================================================

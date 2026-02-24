@@ -13,11 +13,12 @@ function ConfirmedPageContent() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [apiUrl, setApiUrl] = useState<string>('http://localhost:8000');
+  const [apiUrl, setApiUrl] = useState<string>('https://insurance-ai-pipeline-document-processing-production.up.railway.app');
   const [statusMessage, setStatusMessage] = useState<string>('Initializing...');
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const pollCountRef = useRef<number>(0);
+  const isFinalizingRef = useRef<boolean>(false);
 
   useEffect(() => {
     // Mark as hydrated after first render
@@ -28,8 +29,8 @@ function ConfirmedPageContent() {
     // Set API URL on client side only
     const isVercel = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
     const url = isVercel
-      ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
-      : 'http://localhost:8000';
+      ? (process.env.NEXT_PUBLIC_API_URL || 'https://insurance-ai-pipeline-document-processing-production.up.railway.app')
+      : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
     setApiUrl(url);
   }, []);
 
@@ -118,6 +119,12 @@ function ConfirmedPageContent() {
           }
           
           // Step 2: Phase 3 is complete! Now call finalize-upload
+          // Guard: only call finalize ONCE
+          if (isFinalizingRef.current) {
+            console.log('Finalize already in progress, skipping...');
+            return; // Don't call finalize again while it's running
+          }
+          isFinalizingRef.current = true;
           console.log('✅ Phase 3 complete! Pushing to Google Sheets...');
           setStatusMessage('Pushing data to Google Sheets...');
           
@@ -136,6 +143,7 @@ function ConfirmedPageContent() {
             finalizeData = await finalizeResponse.json();
           } catch (parseError) {
             // Retry a few times
+            isFinalizingRef.current = false; // Allow retry
             if (currentAttempt < 50) {
               console.log(`Failed to parse finalize response, retrying...`);
               return; // Continue polling
@@ -144,6 +152,13 @@ function ConfirmedPageContent() {
             setError('Failed to push data to Google Sheets');
             setIsProcessing(false);
             return;
+          }
+          
+          // If backend says finalize is already in progress (lock), just wait
+          if (finalizeData.inProgress) {
+            console.log('Finalize in progress on server, waiting...');
+            setStatusMessage('Finalizing data (in progress)...');
+            return; // Keep polling, don't reset flag
           }
           
           // Check finalize result
@@ -157,6 +172,7 @@ function ConfirmedPageContent() {
           }
           
           // Finalize failed - retry a few times
+          isFinalizingRef.current = false; // Allow retry
           const errorMsg = finalizeData.error || finalizeData.detail || '';
           if (currentAttempt < 60) {
             console.log(`Finalize failed, retrying (attempt ${currentAttempt}/${maxPolls})... Error: ${errorMsg}`);
@@ -171,6 +187,7 @@ function ConfirmedPageContent() {
           
         } catch (err: any) {
           // Network errors - keep polling for a while
+          isFinalizingRef.current = false; // Allow retry
           if (pollCountRef.current < 50) {
             console.log(`Network error, retrying (attempt ${pollCountRef.current}/${maxPolls})...`);
             setStatusMessage('Connection issue, retrying...');
