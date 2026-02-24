@@ -1315,6 +1315,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                 
                 # STEP 2: Assign one column per carrier (for ALL their file types)
                 updates = []
+                all_carrier_data = {}  # Collect for DB save
                 
                 # Loop through each carrier ONCE and get their column
                 for carrier_index, carrier in enumerate(record.get('carriers', [])):
@@ -1323,6 +1324,10 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                     
                     carrier_name = carrier.get('carrierName', 'Unknown')
                     column = columns[carrier_index]  # This carrier's column (B, C, or D)
+                    
+                    # Initialize carrier data collection for DB save
+                    if carrier_name not in all_carrier_data:
+                        all_carrier_data[carrier_name] = {'property': None, 'liability': None, 'liquor': None, 'workerscomp': None}
                     
                     # Process GL data if exists
                     if carrier.get('liabilityPDF'):
@@ -1337,6 +1342,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                             blob = bucket.blob(gl_file)
                             if blob.exists():
                                 gl_data = json.loads(blob.download_as_string().decode('utf-8'))
+                                all_carrier_data[carrier_name]['liability'] = gl_data
                                 
                                 # For row 28 (Total Premium), use priority logic to match row 91
                                 for field_name, row_num in gl_field_rows.items():
@@ -1393,6 +1399,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                             blob = bucket.blob(property_file)
                             if blob.exists():
                                 property_data = json.loads(blob.download_as_string().decode('utf-8'))
+                                all_carrier_data[carrier_name]['property'] = property_data
                                 
                                 # For row 80 (Total Premium), use priority logic to match row 92
                                 for field_name, row_num in property_field_rows.items():
@@ -1449,6 +1456,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                             blob = bucket.blob(liquor_file)
                             if blob.exists():
                                 liquor_data = json.loads(blob.download_as_string().decode('utf-8'))
+                                all_carrier_data[carrier_name]['liquor'] = liquor_data
                                 
                                 # Use the liquor field rows mapping defined earlier
                                 # For row 42 (Total Premium), use priority logic to match row 94
@@ -1506,6 +1514,7 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                             blob = bucket.blob(wc_file)
                             if blob.exists():
                                 wc_data = json.loads(blob.download_as_string().decode('utf-8'))
+                                all_carrier_data[carrier_name]['workerscomp'] = wc_data
                                 
                                 # Use the workers comp field rows mapping defined earlier
                                 # Skip "Excluded Officer" fields - leave row 89 empty
@@ -1562,6 +1571,31 @@ def process_upload_llm_extraction(upload_id: str) -> Dict[str, Any]:
                     print(f"✅ Batch updated {len(updates)} fields to sheet (GL + Property + Liquor + Workers Comp + Premium Breakdown)")
                 else:
                     print("⚠️  No values to fill")
+                
+                # Save to coversheet app's PostgreSQL database
+                try:
+                    from phase5_googlesheet import _build_extracted_data, save_summary_to_database
+                    
+                    submission_id = record.get('submissionId')
+                    created_by = record.get('createdBy', username)
+                    sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}/edit#gid={sheet.id}"
+                    
+                    if submission_id:
+                        carriers_list = record.get('carriers', [])
+                        extracted_data = _build_extracted_data(carriers_list, all_carrier_data)
+                        
+                        print(f"\n📦 Saving to coversheet database (submissionId: {submission_id})...")
+                        save_summary_to_database(
+                            submission_id=submission_id,
+                            upload_id=upload_id,
+                            created_by=created_by,
+                            sheet_url=sheet_url,
+                            extracted_data=extracted_data
+                        )
+                    else:
+                        print("ℹ️  No submissionId in metadata, skipping coversheet DB save")
+                except Exception as db_err:
+                    print(f"⚠️  DB save failed (non-fatal): {db_err}")
             else:
                 print("⚠️  Credentials not found")
         except Exception as e:
