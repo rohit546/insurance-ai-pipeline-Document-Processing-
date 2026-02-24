@@ -21,6 +21,7 @@ from schemas.liquor_schema import LIQUOR_FIELDS_SCHEMA, get_liquor_field_names
 load_dotenv()
 
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
+COVERSHEET_DATABASE_URL = os.getenv('COVERSHEET_DATABASE_URL')
 
 # Google Sheets API rate limit: 60 write requests per minute per user
 # We add delays between calls and retry on 429 errors
@@ -746,6 +747,79 @@ def _build_extracted_data(carriers: list, all_carrier_data: dict) -> dict:
     return {"carriers": carrier_list}
 
 
+def save_summary_to_database(
+    submission_id: str,
+    upload_id: str,
+    created_by: str,
+    sheet_url: str,
+    extracted_data: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Save extracted summary data to the coversheet app's PostgreSQL database.
+    Only called when submissionId is present (uploads from the other app).
+    
+    Returns the row id on success, None on failure.
+    """
+    if not COVERSHEET_DATABASE_URL:
+        print("⚠️  COVERSHEET_DATABASE_URL not set, skipping DB save")
+        return None
+    
+    try:
+        import psycopg2
+        
+        conn = psycopg2.connect(COVERSHEET_DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Get carrier names from extracted data
+        carriers = extracted_data.get('carriers', [])
+        carrier_1_name = carriers[0].get('carrierName') if len(carriers) > 0 else None
+        carrier_2_name = carriers[1].get('carrierName') if len(carriers) > 1 else None
+        carrier_3_name = carriers[2].get('carrierName') if len(carriers) > 2 else None
+        
+        cur.execute("""
+            INSERT INTO submission_summaries (
+                submission_id, upload_id, sheet_url, created_by,
+                carrier_1_name, carrier_2_name, carrier_3_name,
+                raw_ai_response
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (submission_id) 
+            DO UPDATE SET
+                upload_id = EXCLUDED.upload_id,
+                sheet_url = EXCLUDED.sheet_url,
+                carrier_1_name = EXCLUDED.carrier_1_name,
+                carrier_2_name = EXCLUDED.carrier_2_name,
+                carrier_3_name = EXCLUDED.carrier_3_name,
+                raw_ai_response = EXCLUDED.raw_ai_response,
+                updated_at = NOW()
+            RETURNING id
+        """, (
+            submission_id,
+            upload_id,
+            sheet_url,
+            created_by,
+            carrier_1_name,
+            carrier_2_name,
+            carrier_3_name,
+            json.dumps(extracted_data)
+        ))
+        
+        result = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        row_id = str(result[0]) if result else None
+        print(f"✅ Saved summary to coversheet DB (id: {row_id})")
+        return row_id
+        
+    except Exception as e:
+        print(f"⚠️  Failed to save to coversheet DB: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Fields Data") -> Dict[str, Any]:
     """
     Finalize upload: Load ALL carriers from this upload, build side-by-side layout, push ONCE.
@@ -1368,6 +1442,23 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         # Build flat extractedData for frontend DB storage
         extracted_data = _build_extracted_data(carriers, all_carrier_data)
         
+        # Save to coversheet app's PostgreSQL database (if submissionId provided)
+        submission_id = upload_record.get('submissionId')
+        created_by = upload_record.get('createdBy', username)
+        db_row_id = None
+        
+        if submission_id:
+            print(f"\n📦 Saving to coversheet database (submissionId: {submission_id})...")
+            db_row_id = save_summary_to_database(
+                submission_id=submission_id,
+                upload_id=upload_id,
+                created_by=created_by,
+                sheet_url=sheet_url,
+                extracted_data=extracted_data
+            )
+        else:
+            print(f"\nℹ️  No submissionId in metadata, skipping coversheet DB save")
+        
         return {
             "success": True,
             "uploadId": upload_id,
@@ -1381,7 +1472,9 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
                 "liability": has_liability,
                 "liquor": has_liquor
             },
-            "extractedData": extracted_data
+            "extractedData": extracted_data,
+            "dbSaved": db_row_id is not None,
+            "submissionId": submission_id
         }
         
     except Exception as e:

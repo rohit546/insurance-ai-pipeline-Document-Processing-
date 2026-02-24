@@ -316,6 +316,15 @@ async def upload_quotes(
         carriers_info = json.loads(carriers_json)
         carriers = carriers_info.get("carriers", [])
         
+        # Extract submissionId and createdBy from the other app (if provided)
+        submission_id = carriers_info.get("submissionId")  # UUID from coversheet app
+        created_by = carriers_info.get("createdBy", username)  # fallback to header username
+        
+        if submission_id:
+            print(f"📋 Submission ID (coversheet): {submission_id}")
+        if created_by != username:
+            print(f"📋 Created by (coversheet): {created_by}")
+        
         if not carriers:
             raise HTTPException(status_code=400, detail="No carriers provided")
         
@@ -372,7 +381,11 @@ async def upload_quotes(
                     raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
         
         # Process uploads (username already extracted from headers above)
-        result = process_carrier_uploads(carriers_data, username)
+        result = process_carrier_uploads(
+            carriers_data, username,
+            submission_id=submission_id,
+            created_by=created_by
+        )
         
         if not result["success"]:
             raise HTTPException(status_code=500, detail=result.get("message"))

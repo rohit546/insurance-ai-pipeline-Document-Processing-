@@ -81,7 +81,9 @@ def save_metadata(metadata: Dict[str, Any]) -> None:
 
 def process_carrier_uploads(
     carriers_data: List[Dict[str, Any]],
-    username: str
+    username: str,
+    submission_id: str = None,
+    created_by: str = None
 ) -> Dict[str, Any]:
     """
     Process multiple carriers and upload their PDFs
@@ -98,6 +100,8 @@ def process_carrier_uploads(
             - workersCompPDF: bytes (file content)
             - workersCompFilename: str
         username: Username for tracking and sheet routing
+        submission_id: UUID from coversheet app (optional)
+        created_by: Username from coversheet app (optional)
     
     Returns:
         Success response with all file paths and metadata
@@ -195,6 +199,12 @@ def process_carrier_uploads(
             "totalFiles": total_files,
             "carriers": uploaded_carriers
         }
+        
+        # Store coversheet app fields if provided
+        if submission_id:
+            upload_record["submissionId"] = submission_id
+        if created_by:
+            upload_record["createdBy"] = created_by
         
         metadata["uploads"].append(upload_record)
         save_metadata(metadata)
