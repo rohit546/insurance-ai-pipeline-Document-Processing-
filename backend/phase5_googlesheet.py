@@ -629,6 +629,123 @@ def _apply_sheet_formatting(sheet, all_rows: List[List[str]], has_property: bool
         # Don't fail the whole process if formatting fails
 
 
+def _get_field(data: dict, field_name: str) -> str:
+    """Extract llm_value from a field dict, or the value directly if it's a string."""
+    if not data or field_name not in data:
+        return ""
+    val = data[field_name]
+    if isinstance(val, dict):
+        return str(val.get("llm_value", "") or "")
+    return str(val or "")
+
+
+def _build_extracted_data(carriers: list, all_carrier_data: dict) -> dict:
+    """
+    Build a flat extractedData structure from all_carrier_data for frontend DB storage.
+    Maps internal field names → camelCase keys matching the frontend schema.
+    """
+    carrier_list = []
+
+    for carrier in carriers:
+        carrier_name = carrier.get("carrierName", "Unknown")
+        cd = all_carrier_data.get(carrier_name, {})
+        gl = cd.get("liability") or {}
+        prop = cd.get("property") or {}
+        liq = cd.get("liquor") or {}
+        wc = cd.get("workerscomp") or {}
+
+        carrier_list.append({
+            "carrierName": carrier_name,
+
+            # General Liability
+            "glEachOccurrenceLimits":        _get_field(gl, "Each Occurrence/General Aggregate Limits"),
+            "glLiabilityDeductible":         _get_field(gl, "Liability Deductible - Per claim or Per Occ basis"),
+            "glHiredAutoNonOwned":           _get_field(gl, "Hired Auto And Non-Owned Auto Liability - Without Delivery Service"),
+            "glFuelContamination":           _get_field(gl, "Fuel Contamination coverage limits"),
+            "glVandalism":                   _get_field(gl, "Vandalism coverage"),
+            "glGarageKeepers":               _get_field(gl, "Garage Keepers Liability"),
+            "glEmploymentPractices":         _get_field(gl, "Employment Practices Liability"),
+            "glAbuseMolestation":            _get_field(gl, "Abuse & Molestation Coverage limits"),
+            "glAssaultBattery":              _get_field(gl, "Assault & Battery Coverage limits"),
+            "glFirearmsActiveAssailant":     _get_field(gl, "Firearms/Active Assailant Coverage limits"),
+            "glAdditionalInsured":           _get_field(gl, "Additional Insured"),
+            "glAdditionalInsuredMortgagee":  _get_field(gl, "Additional Insured (Mortgagee)"),
+            "glAdditionalInsuredJobber":     _get_field(gl, "Additional insured - Jobber"),
+            "glExposure":                    _get_field(gl, "Exposure"),
+            "glRatingBasis":                 _get_field(gl, "Rating basis: If Sales - Subject to Audit"),
+            "glTerrorism":                   _get_field(gl, "Terrorism"),
+            "glPersonalAdvertisingInjury":   _get_field(gl, "Personal and Advertising Injury Limit"),
+            "glProductsCompletedOps":        _get_field(gl, "Products/Completed Operations Aggregate Limit"),
+            "glMinimumEarned":               _get_field(gl, "Minimum Earned"),
+            "glGeneralLiabilityPremium":     _get_field(gl, "General Liability Premium"),
+            "glTotalPremium":                _get_field(gl, "Total Premium (With/Without Terrorism)"),
+            "glPolicyPremium":               _get_field(gl, "Policy Premium"),
+            "glContaminatedFuel":            _get_field(gl, "Contaminated fuel"),
+            "glLiquorLiability":             _get_field(gl, "Liquor Liability"),
+            "glAdditionalInsuredManagers":   _get_field(gl, "Additional Insured - Managers Or Lessors Of Premises"),
+
+            # Liquor Liability
+            "llEachOccurrenceLimits":        _get_field(liq, "Each Occurrence/General Aggregate Limits"),
+            "llSalesSubjectAudit":           _get_field(liq, "Sales - Subject to Audit"),
+            "llAssaultBatteryFirearms":      _get_field(liq, "Assault & Battery/Firearms/Active Assailant"),
+            "llRequirements":                _get_field(liq, "Requirements"),
+            "llSubjectivities":              _get_field(liq, "If any subjectivities in quote please add"),
+            "llMinimumEarned":               _get_field(liq, "Minimum Earned"),
+            "llTotalPremium":                _get_field(liq, "Total Premium (With/Without Terrorism)") or _get_field(liq, "Liquor Premium"),
+
+            # Property Coverages
+            "propConstructionType":          _get_field(prop, "Construction Type"),
+            "propValuationCoinsurance":      _get_field(prop, "Valuation and Coinsurance"),
+            "propCosmeticDamage":            _get_field(prop, "Cosmetic Damage"),
+            "propBuilding":                  _get_field(prop, "Building"),
+            "propPumps":                     _get_field(prop, "Pumps"),
+            "propCanopy":                    _get_field(prop, "Canopy"),
+            "propRoofSurfacing":             _get_field(prop, "Roof Surfacing"),
+            "propRoofSurfacingLimitation":   _get_field(prop, "Roof Surfacing -Limitation"),
+            "propBusinessPersonalProperty":  _get_field(prop, "Business Personal Property"),
+            "propBusinessIncome":            _get_field(prop, "Business Income"),
+            "propBusinessIncomeExtraExpense":_get_field(prop, "Business Income with Extra Expense"),
+            "propEquipmentBreakdown":        _get_field(prop, "Equipment Breakdown"),
+            "propOutdoorSigns":              _get_field(prop, "Outdoor Signs"),
+            "propSignsWithin1000ft":         _get_field(prop, "Signs Within 1,000 Feet to Premises"),
+            "propEmployeeDishonesty":        _get_field(prop, "Employee Dishonesty"),
+            "propMoneySecurities":           _get_field(prop, "Money & Securities"),
+            "propMoneySecuritiesInsideOutside": _get_field(prop, "Money and Securities (Inside; Outside)"),
+            "propSpoilage":                  _get_field(prop, "Spoilage"),
+            "propTheft":                     _get_field(prop, "Theft"),
+            "propTheftSublimit":             _get_field(prop, "Theft Sublimit"),
+            "propTheftDeductible":           _get_field(prop, "Theft Deductible"),
+            "propWindstormHailDeductible":   _get_field(prop, "Windstorm or Hail Deductible"),
+            "propNamedStormDeductible":      _get_field(prop, "Named Storm Deductible"),
+            "propWindHailNamedStormExclusion": _get_field(prop, "Wind and Hail and Named Storm exclusion"),
+            "propAllOtherPerilsDeductible":  _get_field(prop, "All Other Perils Deductible"),
+            "propFireStationAlarm":          _get_field(prop, "Fire Station Alarm"),
+            "propBurglarAlarm":              _get_field(prop, "Burglar Alarm"),
+            "propLossPayee":                 _get_field(prop, "Loss Payee"),
+            "propFormsExclusions":           _get_field(prop, "Forms and Exclusions"),
+            "propProtectiveSafeguards":      _get_field(prop, "Requirement: Protective Safeguards"),
+            "propTerrorism":                 _get_field(prop, "Terrorism"),
+            "propSubjectivity":              _get_field(prop, "Subjectivity:"),
+            "propMinimumEarned":             _get_field(prop, "Minimum Earned"),
+            "propTotalPremium":              _get_field(prop, "Total Premium (With/Without Terrorism)"),
+
+            # Workers Compensation
+            "wcLimits":                      _get_field(wc, "Limits"),
+            "wcFein":                        _get_field(wc, "FEIN #"),
+            "wcPayrollSubjectAudit":         _get_field(wc, "Payroll - Subject to Audit"),
+            "wcIncludedExcludedOfficers":    _get_field(wc, "Excluded Officer"),
+            "wcTotalPremium":                _get_field(wc, "Total Premium") or _get_field(wc, "Workers Compensation Premium"),
+
+            # Premium Breakdown
+            "premiumGl":           _get_field(gl, "Total Premium (With/Without Terrorism)") or _get_field(gl, "General Liability Premium"),
+            "premiumProperty":     _get_field(prop, "Total Premium (With/Without Terrorism)"),
+            "premiumLiquor":       _get_field(liq, "Total Premium (With/Without Terrorism)") or _get_field(liq, "Liquor Premium"),
+            "premiumWc":           _get_field(wc, "Total Premium") or _get_field(wc, "Workers Compensation Premium"),
+        })
+
+    return {"carriers": carrier_list}
+
+
 def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Fields Data") -> Dict[str, Any]:
     """
     Finalize upload: Load ALL carriers from this upload, build side-by-side layout, push ONCE.
@@ -1248,6 +1365,9 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         has_liability = any(all_carrier_data[c].get('liability') for c in carrier_names if c in all_carrier_data)
         has_liquor = any(all_carrier_data[c].get('liquor') for c in carrier_names if c in all_carrier_data)
         
+        # Build flat extractedData for frontend DB storage
+        extracted_data = _build_extracted_data(carriers, all_carrier_data)
+        
         return {
             "success": True,
             "uploadId": upload_id,
@@ -1260,7 +1380,8 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
                 "property": has_property,
                 "liability": has_liability,
                 "liquor": has_liquor
-            }
+            },
+            "extractedData": extracted_data
         }
         
     except Exception as e:
