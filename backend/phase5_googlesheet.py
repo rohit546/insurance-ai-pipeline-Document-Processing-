@@ -758,6 +758,9 @@ def save_summary_to_database(
     Save extracted summary data to the coversheet app's PostgreSQL database.
     Only called when submissionId is present (uploads from the other app).
     
+    Populates individual JSONB columns (one per field) with carrier-keyed values,
+    e.g. gl_each_occurrence_limits = {"AAA": "$1,000,000 / $2,000,000"}
+    
     Returns the row id on success, None on failure.
     """
     if not COVERSHEET_DATABASE_URL:
@@ -776,33 +779,141 @@ def save_summary_to_database(
         carrier_2_name = carriers[1].get('carrierName') if len(carriers) > 1 else None
         carrier_3_name = carriers[2].get('carrierName') if len(carriers) > 2 else None
         
-        cur.execute("""
-            INSERT INTO submission_summaries (
-                submission_id, upload_id, sheet_url, created_by,
-                carrier_1_name, carrier_2_name, carrier_3_name,
-                raw_ai_response
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (submission_id) 
-            DO UPDATE SET
-                upload_id = EXCLUDED.upload_id,
-                sheet_url = EXCLUDED.sheet_url,
-                carrier_1_name = EXCLUDED.carrier_1_name,
-                carrier_2_name = EXCLUDED.carrier_2_name,
-                carrier_3_name = EXCLUDED.carrier_3_name,
-                raw_ai_response = EXCLUDED.raw_ai_response,
-                updated_at = NOW()
-            RETURNING id
-        """, (
-            submission_id,
-            upload_id,
-            sheet_url,
-            created_by,
-            carrier_1_name,
-            carrier_2_name,
-            carrier_3_name,
+        # Map camelCase extractedData keys → snake_case DB columns
+        # Each JSONB column stores {carrierName: value} for all carriers
+        FIELD_TO_COLUMN = {
+            # General Liability
+            "glEachOccurrenceLimits":       "gl_each_occurrence_limits",
+            "glLiabilityDeductible":        "gl_liability_deductible",
+            "glHiredAutoNonOwned":          "gl_hired_auto_non_owned",
+            "glFuelContamination":          "gl_fuel_contamination",
+            "glVandalism":                  "gl_vandalism",
+            "glGarageKeepers":              "gl_garage_keepers",
+            "glEmploymentPractices":        "gl_employment_practices",
+            "glAbuseMolestation":           "gl_abuse_molestation",
+            "glAssaultBattery":             "gl_assault_battery",
+            "glFirearmsActiveAssailant":    "gl_firearms_active_assailant",
+            "glAdditionalInsured":          "gl_additional_insured",
+            "glAdditionalInsuredMortgagee": "gl_additional_insured_mortgagee",
+            "glAdditionalInsuredJobber":    "gl_additional_insured_jobber",
+            "glExposure":                   "gl_exposure",
+            "glRatingBasis":                "gl_rating_basis",
+            "glTerrorism":                  "gl_terrorism",
+            "glPersonalAdvertisingInjury":  "gl_personal_advertising_injury",
+            "glProductsCompletedOps":       "gl_products_completed_ops",
+            "glMinimumEarned":              "gl_minimum_earned",
+            "glTotalPremium":               "gl_total_premium",
+            "glPolicyPremium":              "gl_policy_premium",
+            "glContaminatedFuel":           "gl_contaminated_fuel",
+            # Liquor Liability
+            "llEachOccurrenceLimits":       "ll_each_occurrence_limits",
+            "llSalesSubjectAudit":          "ll_sales_subject_audit",
+            "llAssaultBatteryFirearms":     "ll_assault_battery_firearms",
+            "llRequirements":               "ll_requirements",
+            "llSubjectivities":             "ll_subjectivities",
+            "llMinimumEarned":              "ll_minimum_earned",
+            "llTotalPremium":               "ll_total_premium",
+            # Property
+            "propConstructionType":         "prop_construction_type",
+            "propValuationCoinsurance":     "prop_valuation_coinsurance",
+            "propCosmeticDamage":           "prop_cosmetic_damage",
+            "propBuilding":                 "prop_building",
+            "propPumps":                    "prop_pumps",
+            "propCanopy":                   "prop_canopy",
+            "propRoofSurfacing":            "prop_roof_surfacing",
+            "propRoofSurfacingLimitation":  "prop_roof_surfacing_limitation",
+            "propBusinessPersonalProperty": "prop_business_personal_property",
+            "propBusinessIncome":           "prop_business_income",
+            "propBusinessIncomeExtraExpense": "prop_business_income_extra_expense",
+            "propEquipmentBreakdown":       "prop_equipment_breakdown",
+            "propOutdoorSigns":             "prop_outdoor_signs",
+            "propSignsWithin1000ft":        "prop_signs_within_1000ft",
+            "propEmployeeDishonesty":       "prop_employee_dishonesty",
+            "propMoneySecurities":          "prop_money_securities",
+            "propMoneySecuritiesInsideOutside": "prop_money_securities_inside_outside",
+            "propSpoilage":                 "prop_spoilage",
+            "propTheft":                    "prop_theft",
+            "propTheftSublimit":            "prop_theft_sublimit",
+            "propTheftDeductible":          "prop_theft_deductible",
+            "propWindstormHailDeductible":  "prop_windstorm_hail_deductible",
+            "propNamedStormDeductible":     "prop_named_storm_deductible",
+            "propWindHailNamedStormExclusion": "prop_wind_hail_named_storm_exclusion",
+            "propAllOtherPerilsDeductible": "prop_all_other_perils_deductible",
+            "propFireStationAlarm":         "prop_fire_station_alarm",
+            "propBurglarAlarm":             "prop_burglar_alarm",
+            "propLossPayee":               "prop_loss_payee",
+            "propFormsExclusions":         "prop_forms_exclusions",
+            "propProtectiveSafeguards":    "prop_protective_safeguards",
+            "propTerrorism":               "prop_terrorism",
+            "propSubjectivity":            "prop_subjectivity",
+            "propMinimumEarned":           "prop_minimum_earned",
+            "propTotalPremium":            "prop_total_premium",
+            # Workers Compensation
+            "wcLimits":                    "wc_limits",
+            "wcFein":                      "wc_fein",
+            "wcPayrollSubjectAudit":       "wc_payroll_subject_audit",
+            "wcIncludedExcludedOfficers":  "wc_included_excluded_officers",
+            "wcTotalPremium":              "wc_total_premium",
+            # Premium Breakdown
+            "premiumGl":                   "premium_gl",
+            "premiumProperty":             "premium_property",
+            "premiumLiquor":               "premium_liquor",
+            "premiumWc":                   "premium_wc",
+        }
+        
+        # Build per-column JSONB values: {carrierName: fieldValue} across all carriers
+        column_values = {}
+        for carrier in carriers:
+            cname = carrier.get('carrierName', 'Unknown')
+            for camel_key, db_col in FIELD_TO_COLUMN.items():
+                val = carrier.get(camel_key, '')
+                if val:  # Only include non-empty values
+                    if db_col not in column_values:
+                        column_values[db_col] = {}
+                    column_values[db_col][cname] = val
+        
+        # Build dynamic INSERT with all populated columns
+        base_columns = [
+            'submission_id', 'upload_id', 'sheet_url', 'created_by',
+            'carrier_1_name', 'carrier_2_name', 'carrier_3_name',
+            'raw_ai_response'
+        ]
+        base_values = [
+            submission_id, upload_id, sheet_url, created_by,
+            carrier_1_name, carrier_2_name, carrier_3_name,
             json.dumps(extracted_data)
-        ))
+        ]
+        
+        # Add all field columns that have data
+        field_columns = []
+        field_values = []
+        for db_col, val_dict in column_values.items():
+            field_columns.append(db_col)
+            field_values.append(json.dumps(val_dict))
+        
+        all_columns = base_columns + field_columns
+        all_values = base_values + field_values
+        
+        placeholders = ', '.join(['%s'] * len(all_values))
+        columns_str = ', '.join(all_columns)
+        
+        # Build ON CONFLICT UPDATE for all columns
+        update_parts = []
+        for col in all_columns:
+            if col != 'submission_id':  # Don't update the conflict key
+                update_parts.append(f"{col} = EXCLUDED.{col}")
+        update_parts.append("updated_at = NOW()")
+        update_str = ', '.join(update_parts)
+        
+        sql = f"""
+            INSERT INTO submission_summaries ({columns_str})
+            VALUES ({placeholders})
+            ON CONFLICT (submission_id) 
+            DO UPDATE SET {update_str}
+            RETURNING id
+        """
+        
+        cur.execute(sql, all_values)
         
         result = cur.fetchone()
         conn.commit()
@@ -810,7 +921,8 @@ def save_summary_to_database(
         conn.close()
         
         row_id = str(result[0]) if result else None
-        print(f"✅ Saved summary to coversheet DB (id: {row_id})")
+        field_count = len(field_columns)
+        print(f"✅ Saved summary to coversheet DB (id: {row_id}, {field_count} field columns populated)")
         return row_id
         
     except Exception as e:
