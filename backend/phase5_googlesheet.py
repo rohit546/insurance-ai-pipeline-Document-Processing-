@@ -1182,7 +1182,6 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         username = upload_record.get('username', 'default')  # Kept for DB compat
         
         # 6. Use the SAME row mappings and logic as phase3_llm.py
-        import json
         
         # GL Field to Row mapping (same as phase3_llm.py)
         gl_field_rows = {
