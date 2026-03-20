@@ -78,12 +78,34 @@ def _get_credentials_path() -> str:
         '../insurance-sheets-474717-7fc3fd9736bc.json',
         'insurance-sheets-474717-7fc3fd9736bc.json'
     ]
+    # NOTE: Domain-wide delegation is applied separately via _create_delegated_credentials()
     
     for path in possible_paths:
         if os.path.exists(path):
             return str(Path(path).resolve())
     
     raise Exception("Google Sheets credentials not found! Please provide credentials.json")
+
+
+def _create_delegated_credentials(scopes: list):
+    """
+    Create Google credentials with domain-wide delegation if GOOGLE_DELEGATED_USER is set.
+    Files created with delegated credentials are stored under the delegated user's Drive
+    instead of the service account's 15GB Drive, avoiding storageQuotaExceeded errors.
+    """
+    creds_path = _get_credentials_path()
+    print(f"✅ Using credentials from: {creds_path}")
+    
+    creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+    
+    delegated_user = os.getenv('GOOGLE_DELEGATED_USER')
+    if delegated_user:
+        creds = creds.with_subject(delegated_user)
+        print(f"✅ Domain-wide delegation active — acting as: {delegated_user}")
+    else:
+        print("⚠️  GOOGLE_DELEGATED_USER not set — using service account's own Drive (15GB limit)")
+    
+    return creds
 
 
 class SheetBuilder:
@@ -266,11 +288,8 @@ def push_to_sheets_from_gcs(bucket: storage.bucket.Bucket, data_path: str, sheet
         'https://www.googleapis.com/auth/drive'
     ]
     
-    creds_path = _get_credentials_path()
-    print(f"✅ Using credentials from: {creds_path}")
-    
     try:
-        creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+        creds = _create_delegated_credentials(scope)
         client = gspread.authorize(creds)
         print("✅ Connected to Google Sheets!")
         
@@ -1112,13 +1131,35 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         try:
             _prefetch_company_info = json.loads(_company_info_blob.download_as_string().decode('utf-8'))
             print(f"✅ Pre-loaded company info: {list(_prefetch_company_info.keys())}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️  Failed to parse company info JSON: {e}")
+    else:
+        print(f"⚠️  Company info file not found at: {_company_info_path}")
 
     # Sheet title = Named Insured name (e.g. "ABC LLC")
     named_insured = _prefetch_company_info.get("Named Insured", "").strip()
+    
+    # Fallback: try to find Named Insured from already-loaded carrier extraction data
+    if not named_insured:
+        print("⚠️  Named Insured not in company_info — searching carrier extraction data...")
+        for carrier_name, carrier_types in all_carrier_data.items():
+            for type_short, data in carrier_types.items():
+                candidate = ""
+                if isinstance(data, dict):
+                    candidate = (data.get("Named Insured", {}).get("value", "") 
+                                 if isinstance(data.get("Named Insured"), dict)
+                                 else str(data.get("Named Insured", "")))
+                if candidate and candidate.lower() not in ("null", "none", "n/a", ""):
+                    named_insured = candidate.strip()
+                    print(f"  ✅ Found Named Insured from {carrier_name}/{type_short}: '{named_insured}'")
+                    break
+            if named_insured:
+                break
+
     if not named_insured:
         named_insured = upload_record.get('username', 'Unknown Account')
+        print(f"⚠️  Using username as fallback sheet title: '{named_insured}'")
+    
     named_insured_clean = re.sub(r'[\\/*?:\[\]]', '', named_insured).strip() or "Unknown Account"
     sheet_title = named_insured_clean
     print(f"📄 Account sheet title: '{sheet_title}'")
@@ -1130,11 +1171,8 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         'https://www.googleapis.com/auth/drive'
     ]
 
-    creds_path = _get_credentials_path()
-    print(f"✅ Using credentials from: {creds_path}")
-
     try:
-        creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+        creds = _create_delegated_credentials(scope)
         client = gspread.authorize(creds)
         print("✅ Connected to Google Sheets!")
 
@@ -1664,8 +1702,7 @@ if __name__ == "__main__":
             'https://www.googleapis.com/auth/drive'
         ]
         
-        creds_path = _get_credentials_path()
-        creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+        creds = _create_delegated_credentials(scope)
         client = gspread.authorize(creds)
         
         # Open the sheet
