@@ -24,6 +24,18 @@ load_dotenv()
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 COVERSHEET_DATABASE_URL = os.getenv('COVERSHEET_DATABASE_URL')
 
+# Template spreadsheet ID — the master template that gets COPIED for each new summary.
+# Set this to the ID of your "Insurance Fields Data" spreadsheet.
+# e.g. from URL: https://docs.google.com/spreadsheets/d/THIS_IS_THE_ID/edit
+TEMPLATE_SPREADSHEET_ID = os.getenv('TEMPLATE_SPREADSHEET_ID', '')
+
+# Destination folder ID in the delegated user's Drive where new sheets are saved.
+# e.g. from URL: https://drive.google.com/drive/folders/THIS_IS_THE_ID
+DESTINATION_FOLDER_ID = os.getenv('DESTINATION_FOLDER_ID', '')
+
+# The user email for domain-wide delegation (files owned by this user, uses their quota)
+GOOGLE_DELEGATED_USER = os.getenv('GOOGLE_DELEGATED_USER', '')
+
 # Google Sheets API rate limit: 60 write requests per minute per user
 # We add delays between calls and retry on 429 errors
 SHEETS_WRITE_DELAY = 2  # seconds between write API calls
@@ -961,79 +973,58 @@ def _build_drive_service(creds):
     return _build_google_api_service('drive', 'v3', credentials=creds)
 
 
-def _get_or_create_drive_folder(drive_service, folder_name: str = "Insurance Summaries") -> str:
-    """Get or create a Google Drive folder by name. Returns folder_id."""
-    query = (
-        f"name='{folder_name}' and "
-        "mimeType='application/vnd.google-apps.folder' and trashed=false"
-    )
-    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get('files', [])
-    if files:
-        folder_id = files[0]['id']
-        print(f"✅ Found existing Drive folder: '{folder_name}' (id: {folder_id})")
-        return folder_id
-    # Create new folder
-    folder_metadata = {
-        'name': folder_name,
-        'mimeType': 'application/vnd.google-apps.folder'
-    }
-    folder = drive_service.files().create(body=folder_metadata, fields='id').execute()
-    folder_id = folder.get('id')
-    print(f"✅ Created new Drive folder: '{folder_name}' (id: {folder_id})")
-    return folder_id
-
-
-def _create_account_spreadsheet(client, drive_service, folder_id: str, sheet_title: str):
+def _create_account_spreadsheet(client, drive_service, sheet_title: str):
     """
-    Create a new standalone spreadsheet named sheet_title inside folder_id,
-    copying the MAIN SHEET template from 'Insurance Fields Data' for formatting.
+    Copy the template spreadsheet via drive.files.copy() — one API call.
+    Files are owned by the delegated user (uses their Drive quota).
     Returns: (spreadsheet, worksheet) tuple.
     """
-    # 1. Create blank spreadsheet
-    new_ss = client.create(sheet_title)
-    print(f"✅ Created new spreadsheet: '{sheet_title}' (id: {new_ss.id})")
+    template_id = TEMPLATE_SPREADSHEET_ID
+    folder_id = DESTINATION_FOLDER_ID
 
-    # 2. Move into the target Drive folder
-    drive_service.files().update(
-        fileId=new_ss.id,
-        addParents=folder_id,
-        removeParents='root',
-        fields='id, parents'
+    if not template_id:
+        raise ValueError(
+            "TEMPLATE_SPREADSHEET_ID is not set. "
+            "Set it to the ID of your 'Insurance Fields Data' template spreadsheet."
+        )
+
+    # 1. Copy entire template → new spreadsheet (single API call)
+    body = {'name': sheet_title}
+    if folder_id:
+        body['parents'] = [folder_id]
+
+    copy_resp = drive_service.files().copy(
+        fileId=template_id,
+        body=body,
+        fields='id'
     ).execute()
-    print(f"✅ Moved spreadsheet into 'Insurance Summaries' folder")
 
-    # 3. Copy MAIN SHEET template (preserves ALL formatting)
-    template_ss = client.open("Insurance Fields Data")
-    main_ws = template_ss.worksheet("MAIN SHEET")
-    copy_result = main_ws.copy_to(new_ss.id)
-    copied_sheet_id = copy_result['sheetId']
-    print(f"✅ Copied MAIN SHEET template (new sheetId: {copied_sheet_id})")
+    new_id = copy_resp['id']
+    print(f"✅ Copied template → new spreadsheet: '{sheet_title}' (id: {new_id})")
 
-    # 4. Rename copied sheet to 'Summary'
-    new_ss.batch_update({
-        'requests': [{
-            'updateSheetProperties': {
-                'properties': {'sheetId': copied_sheet_id, 'title': 'Summary'},
-                'fields': 'title'
-            }
-        }]
-    })
-    print(f"✅ Renamed sheet tab to 'Summary'")
+    if folder_id:
+        print(f"✅ Saved into destination folder: {folder_id}")
+    else:
+        print("⚠️  No DESTINATION_FOLDER_ID set — file is in Drive root")
 
-    # 5. Delete the auto-created blank 'Sheet1'
+    # 2. Make publicly accessible (anyone with link can edit)
     try:
-        default_sheet = new_ss.sheet1
-        if default_sheet.id != copied_sheet_id:
-            new_ss.del_worksheet(default_sheet)
-            print(f"✅ Deleted default 'Sheet1'")
+        drive_service.permissions().create(
+            fileId=new_id,
+            body={'role': 'writer', 'type': 'anyone'},
+            fields='id'
+        ).execute()
+        print(f"✅ Sheet made publicly accessible (anyone with link can edit)")
     except Exception as e:
-        print(f"ℹ️  Could not delete default sheet (non-fatal): {e}")
+        print(f"⚠️  Could not set public permissions (non-fatal): {e}")
 
-    # 6. Return worksheet handle
-    time.sleep(2)  # Allow Google to propagate the rename
-    worksheet = new_ss.worksheet("Summary")
-    return new_ss, worksheet
+    # 3. Open with gspread and get the first worksheet
+    new_ss = client.open_by_key(new_id)
+    worksheets = new_ss.worksheets()
+    sheet = worksheets[0]
+    print(f"✅ Opened worksheet: '{sheet.title}'")
+
+    return new_ss, sheet
 
 
 def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Fields Data") -> Dict[str, Any]:
@@ -1161,7 +1152,8 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         print(f"⚠️  Using username as fallback sheet title: '{named_insured}'")
     
     named_insured_clean = re.sub(r'[\\/*?:\[\]]', '', named_insured).strip() or "Unknown Account"
-    sheet_title = named_insured_clean
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    sheet_title = f"{named_insured_clean} - {timestamp}"
     print(f"📄 Account sheet title: '{sheet_title}'")
 
     # 4. Setup Google Sheets + Drive
@@ -1176,18 +1168,15 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         client = gspread.authorize(creds)
         print("✅ Connected to Google Sheets!")
 
-        # Build Drive v3 service for folder management
+        # Build Drive v3 service
         drive_service = _build_drive_service(creds)
         print("✅ Connected to Google Drive!")
 
-        # Get or create "Insurance Summaries" Drive folder
-        folder_id = _get_or_create_drive_folder(drive_service, "Insurance Summaries")
-
-        # 5. Create new standalone spreadsheet from MAIN SHEET template
+        # 5. Copy template → new standalone spreadsheet (single API call)
         print(f"\n{'='*80}")
         print(f"CREATING ACCOUNT SPREADSHEET: {sheet_title}")
         print(f"{'='*80}")
-        account_ss, sheet = _create_account_spreadsheet(client, drive_service, folder_id, sheet_title)
+        account_ss, sheet = _create_account_spreadsheet(client, drive_service, sheet_title)
         print(f"{'='*80}\n")
 
         username = upload_record.get('username', 'default')  # Kept for DB compat
