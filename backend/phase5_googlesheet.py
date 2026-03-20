@@ -1018,13 +1018,43 @@ def _create_account_spreadsheet(client, drive_service, sheet_title: str):
     except Exception as e:
         print(f"⚠️  Could not set public permissions (non-fatal): {e}")
 
-    # 3. Open with gspread and get the first worksheet
+    # 3. Open with gspread, keep only MAIN SHEET, delete all other tabs
     new_ss = client.open_by_key(new_id)
     worksheets = new_ss.worksheets()
-    sheet = worksheets[0]
-    print(f"✅ Opened worksheet: '{sheet.title}'")
 
-    return new_ss, sheet
+    # Find the MAIN SHEET tab (the actual template with formatting)
+    main_sheet = None
+    for ws in worksheets:
+        if ws.title == "MAIN SHEET":
+            main_sheet = ws
+            break
+
+    if not main_sheet:
+        # Fallback: use the first sheet if MAIN SHEET not found
+        main_sheet = worksheets[0]
+        print(f"⚠️  'MAIN SHEET' tab not found — using first tab: '{main_sheet.title}'")
+    else:
+        print(f"✅ Found 'MAIN SHEET' tab")
+
+    # Delete every other tab so the final spreadsheet has just one clean sheet
+    for ws in worksheets:
+        if ws.id != main_sheet.id:
+            try:
+                new_ss.del_worksheet(ws)
+            except Exception:
+                pass  # non-fatal if a tab can't be deleted
+
+    # Rename MAIN SHEET to "Summary"
+    try:
+        main_sheet.update_title("Summary")
+        print(f"✅ Renamed tab to 'Summary'")
+    except Exception as e:
+        print(f"⚠️  Could not rename tab (non-fatal): {e}")
+
+    deleted_count = len(worksheets) - 1
+    print(f"✅ Cleaned up {deleted_count} extra tabs — spreadsheet has 1 tab")
+
+    return new_ss, main_sheet
 
 
 def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Fields Data") -> Dict[str, Any]:
