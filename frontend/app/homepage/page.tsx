@@ -14,7 +14,7 @@ export default function HomePage() {
       const isVercel = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
       const API_URL = isVercel 
         ? 'https://insurance-backend.duckdns.org'  // HTTPS backend with SSL
-        : 'http://localhost:8000';  // localhost for local dev
+        : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';  // Railway backend
       
       console.log('Calling API:', `${API_URL}/`);
       

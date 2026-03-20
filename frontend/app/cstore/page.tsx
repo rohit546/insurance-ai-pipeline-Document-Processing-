@@ -37,11 +37,13 @@ export default function HomePage() {
 
   useEffect(() => {
     // Get agent profile from localStorage
-    const profile = localStorage.getItem('agentProfile')
-    if (profile) {
-      setAgentProfile(profile)
-      // Fetch resume forms when agent logs in
-      fetchResumeForms()
+    if (typeof window !== 'undefined') {
+      const profile = localStorage.getItem('agentProfile')
+      if (profile) {
+        setAgentProfile(profile)
+        // Fetch resume forms when agent logs in
+        fetchResumeForms()
+      }
     }
   }, [])
 

@@ -25,3 +25,22 @@ qc-system/llm_extracted_fields.json
 policy/*.pdf
 qc-system/*.pdf
 docs/*.pdf
+
+# Secrets and credentials
+generate_key.py
+key.txt
+*_base64.txt
+
+# Backup files
+*_backup.py
+
+# Node / Next.js
+node_modules/
+.next/
+
+# Python
+__pycache__/
+*.pyc
+
+# Playwright MCP logs
+.playwright-mcp/

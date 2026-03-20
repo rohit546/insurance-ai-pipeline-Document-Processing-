@@ -13,14 +13,14 @@ export default function FeedbackPage() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
-  const [apiUrl, setApiUrl] = useState<string>('http://localhost:8000');
+  const [apiUrl, setApiUrl] = useState<string>('https://insurance-ai-pipeline-document-processing-production.up.railway.app');
 
   // Set API URL based on environment (same pattern as other pages)
   useEffect(() => {
     const isProduction = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
     const url = isProduction
-      ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
-      : 'http://localhost:8000';
+      ? (process.env.NEXT_PUBLIC_API_URL || 'https://insurance-ai-pipeline-document-processing-production.up.railway.app')
+      : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
     setApiUrl(url);
   }, []);
 

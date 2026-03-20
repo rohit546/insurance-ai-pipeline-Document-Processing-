@@ -6,6 +6,7 @@ Works with Google Cloud Storage.
 import json
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build as _build_google_api_service
 import os
 import re
 import time
@@ -932,6 +933,90 @@ def save_summary_to_database(
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Drive helpers for account-based spreadsheet management
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_drive_service(creds):
+    """Build Google Drive v3 service from service account credentials."""
+    return _build_google_api_service('drive', 'v3', credentials=creds)
+
+
+def _get_or_create_drive_folder(drive_service, folder_name: str = "Insurance Summaries") -> str:
+    """Get or create a Google Drive folder by name. Returns folder_id."""
+    query = (
+        f"name='{folder_name}' and "
+        "mimeType='application/vnd.google-apps.folder' and trashed=false"
+    )
+    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get('files', [])
+    if files:
+        folder_id = files[0]['id']
+        print(f"✅ Found existing Drive folder: '{folder_name}' (id: {folder_id})")
+        return folder_id
+    # Create new folder
+    folder_metadata = {
+        'name': folder_name,
+        'mimeType': 'application/vnd.google-apps.folder'
+    }
+    folder = drive_service.files().create(body=folder_metadata, fields='id').execute()
+    folder_id = folder.get('id')
+    print(f"✅ Created new Drive folder: '{folder_name}' (id: {folder_id})")
+    return folder_id
+
+
+def _create_account_spreadsheet(client, drive_service, folder_id: str, sheet_title: str):
+    """
+    Create a new standalone spreadsheet named sheet_title inside folder_id,
+    copying the MAIN SHEET template from 'Insurance Fields Data' for formatting.
+    Returns: (spreadsheet, worksheet) tuple.
+    """
+    # 1. Create blank spreadsheet
+    new_ss = client.create(sheet_title)
+    print(f"✅ Created new spreadsheet: '{sheet_title}' (id: {new_ss.id})")
+
+    # 2. Move into the target Drive folder
+    drive_service.files().update(
+        fileId=new_ss.id,
+        addParents=folder_id,
+        removeParents='root',
+        fields='id, parents'
+    ).execute()
+    print(f"✅ Moved spreadsheet into 'Insurance Summaries' folder")
+
+    # 3. Copy MAIN SHEET template (preserves ALL formatting)
+    template_ss = client.open("Insurance Fields Data")
+    main_ws = template_ss.worksheet("MAIN SHEET")
+    copy_result = main_ws.copy_to(new_ss.id)
+    copied_sheet_id = copy_result['sheetId']
+    print(f"✅ Copied MAIN SHEET template (new sheetId: {copied_sheet_id})")
+
+    # 4. Rename copied sheet to 'Summary'
+    new_ss.batch_update({
+        'requests': [{
+            'updateSheetProperties': {
+                'properties': {'sheetId': copied_sheet_id, 'title': 'Summary'},
+                'fields': 'title'
+            }
+        }]
+    })
+    print(f"✅ Renamed sheet tab to 'Summary'")
+
+    # 5. Delete the auto-created blank 'Sheet1'
+    try:
+        default_sheet = new_ss.sheet1
+        if default_sheet.id != copied_sheet_id:
+            new_ss.del_worksheet(default_sheet)
+            print(f"✅ Deleted default 'Sheet1'")
+    except Exception as e:
+        print(f"ℹ️  Could not delete default sheet (non-fatal): {e}")
+
+    # 6. Return worksheet handle
+    time.sleep(2)  # Allow Google to propagate the rename
+    worksheet = new_ss.worksheet("Summary")
+    return new_ss, worksheet
+
+
 def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Fields Data") -> Dict[str, Any]:
     """
     Finalize upload: Load ALL carriers from this upload, build side-by-side layout, push ONCE.
@@ -1019,67 +1104,55 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
             except Exception as e:
                 print(f"  ❌ Failed to load {carrier_name} {type_short}: {e}")
     
-    # 3. Setup Google Sheets
-    print(f"\n🔗 Connecting to Google Sheets...")
+    # 3. Load company info from GCS early — needed for the account-based sheet title
+    _company_info_path = f"phase3/results/{upload_id}_company_info.json"
+    _company_info_blob = bucket.blob(_company_info_path)
+    _prefetch_company_info: Dict[str, Any] = {}
+    if _company_info_blob.exists():
+        try:
+            _prefetch_company_info = json.loads(_company_info_blob.download_as_string().decode('utf-8'))
+            print(f"✅ Pre-loaded company info: {list(_prefetch_company_info.keys())}")
+        except Exception:
+            pass
+
+    # Sheet title = Named Insured name (e.g. "ABC LLC")
+    named_insured = _prefetch_company_info.get("Named Insured", "").strip()
+    if not named_insured:
+        named_insured = upload_record.get('username', 'Unknown Account')
+    named_insured_clean = re.sub(r'[\\/*?:\[\]]', '', named_insured).strip() or "Unknown Account"
+    sheet_title = named_insured_clean
+    print(f"📄 Account sheet title: '{sheet_title}'")
+
+    # 4. Setup Google Sheets + Drive
+    print(f"\n🔗 Connecting to Google Sheets and Drive...")
     scope = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
-    
+
     creds_path = _get_credentials_path()
     print(f"✅ Using credentials from: {creds_path}")
-    
+
     try:
         creds = Credentials.from_service_account_file(creds_path, scopes=scope)
         client = gspread.authorize(creds)
         print("✅ Connected to Google Sheets!")
-        
-        # Get username from metadata for user-specific tab
-        username = upload_record.get('username', 'default')
-        print(f"📋 Using user-specific sheet tab: '{username}'")
-        
-        # 4. Open spreadsheet and select user-specific tab
-        sheet = None
-        try:
-            print(f"🔍 Looking for spreadsheet: {sheet_name}")
-            spreadsheet = client.open(sheet_name)
-            print(f"✅ Opened existing spreadsheet: {sheet_name}")
-            
-            # Try to open user-specific tab
-            try:
-                sheet = spreadsheet.worksheet(username)
-                print(f"✅ Opened user tab: {username}")
-            except gspread.exceptions.WorksheetNotFound:
-                print(f"⚠️  User tab '{username}' not found. Falling back to MAIN SHEET")
-                sheet = spreadsheet.sheet1
-                
-        except gspread.exceptions.SpreadsheetNotFound:
-            print(f"⚠️  Spreadsheet not found, trying alternative approach...")
-            spreadsheets = client.openall()
-            for ss in spreadsheets:
-                if sheet_name.lower() in ss.title.lower():
-                    spreadsheet = ss
-                    print(f"✅ Found matching spreadsheet: {ss.title}")
-                    
-                    # Try to open user-specific tab
-                    try:
-                        sheet = spreadsheet.worksheet(username)
-                        print(f"✅ Opened user tab: {username}")
-                    except gspread.exceptions.WorksheetNotFound:
-                        print(f"⚠️  User tab '{username}' not found. Falling back to MAIN SHEET")
-                        sheet = spreadsheet.sheet1
-                    break
-        
-        if not sheet:
-            raise Exception(f"Could not open sheet or find tab '{username}' in '{sheet_name}'")
-        
-        # 5. CRITICAL: Reset user sheet to MAIN SHEET template (preserves formatting!)
-        from phase3_llm import reset_user_sheet_to_template
+
+        # Build Drive v3 service for folder management
+        drive_service = _build_drive_service(creds)
+        print("✅ Connected to Google Drive!")
+
+        # Get or create "Insurance Summaries" Drive folder
+        folder_id = _get_or_create_drive_folder(drive_service, "Insurance Summaries")
+
+        # 5. Create new standalone spreadsheet from MAIN SHEET template
         print(f"\n{'='*80}")
-        print(f"TEMPLATE RESET PROCEDURE FOR USER: {username}")
+        print(f"CREATING ACCOUNT SPREADSHEET: {sheet_title}")
         print(f"{'='*80}")
-        sheet = reset_user_sheet_to_template(client, username)
+        account_ss, sheet = _create_account_spreadsheet(client, drive_service, folder_id, sheet_title)
         print(f"{'='*80}\n")
+
+        username = upload_record.get('username', 'default')  # Kept for DB compat
         
         # 6. Use the SAME row mappings and logic as phase3_llm.py
         import json
@@ -1232,38 +1305,13 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         
         # STEP 2: Fill company information (rows 2-6)
         print("  📝 Filling company information...")
-        # Extract company info from first available carrier
-        company_info = None
-        company_info_path = f"phase3/results/{upload_id}_company_info.json"
-        print(f"  🔍 Looking for company info at: {company_info_path}")
-        
-        blob = bucket.blob(company_info_path)
-        if blob.exists():
-            print(f"  ✅ Found company info file")
-            try:
-                company_info = json.loads(blob.download_as_string().decode('utf-8'))
-                print(f"  ✅ Loaded company info: {list(company_info.keys()) if company_info else 'empty'}")
-            except Exception as e:
-                print(f"  ❌ Failed to parse company info: {e}")
+        # Use company info pre-loaded before sheet creation (also used for account title)
+        company_info = _prefetch_company_info if _prefetch_company_info else None
+        if company_info:
+            print(f"  ✅ Using pre-loaded company info: {list(company_info.keys())}")
         else:
-            print(f"  ⚠️  Company info file NOT FOUND at: {company_info_path}")
-            # List what files actually exist in phase3/results/ for this upload
-            print(f"  🔍 Checking what Phase 3 files exist for upload {upload_id}...")
-            phase3_files = list(bucket.list_blobs(prefix=f'phase3/results/{upload_id}'))
-            if phase3_files:
-                print(f"  📂 Found {len(phase3_files)} Phase 3 files for this upload:")
-                for f in phase3_files[:10]:  # Show first 10
-                    print(f"    - {f.name}")
-            else:
-                print(f"  ⚠️  No Phase 3 files found with prefix: phase3/results/{upload_id}")
-                # Check if Phase 3 ran at all
-                all_phase3 = list(bucket.list_blobs(prefix='phase3/results/'))
-                recent_files = sorted(all_phase3, key=lambda x: x.time_created, reverse=True)[:5]
-                if recent_files:
-                    print(f"  📂 Recent Phase 3 files (last 5):")
-                    for f in recent_files:
-                        print(f"    - {f.name} (created: {f.time_created})")
-        
+            print(f"  ⚠️  No company info available")
+
         if company_info:
             company_updates = []
             company_fields = [
@@ -1533,8 +1581,8 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
                 else:
                     print(f"      * ⚠️  No data loaded for this carrier")
         
-        # Get Google Sheet URL
-        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}/edit#gid={sheet.id}"
+        # Get Google Sheet URL (standalone account spreadsheet)
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{account_ss.id}/edit#gid={sheet.id}"
         
         print(f"\n{'='*80}")
         print(f"✅ FINALIZATION COMPLETE!")
@@ -1542,8 +1590,8 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
         print(f"✅ Upload ID: {upload_id}")
         print(f"✅ Carriers: {', '.join(carrier_names)}")
         print(f"✅ Fields updated: {len(updates)}")
-        print(f"✅ Sheet: {sheet_name}")
-        print(f"✅ User tab: {username}")
+        print(f"✅ Account Sheet: {sheet_title}")
+        print(f"✅ Drive Folder: Insurance Summaries")
         print(f"🔗 Google Sheet URL: {sheet_url}")
         print(f"{'='*80}\n")
         
@@ -1576,8 +1624,9 @@ def finalize_upload_to_sheets(upload_id: str, sheet_name: str = "Insurance Field
             "uploadId": upload_id,
             "carriers": carrier_names,
             "fieldsUpdated": len(updates),
-            "sheetName": sheet_name,
+            "sheetName": sheet_title,
             "username": username,
+            "accountName": named_insured_clean,
             "sheetUrl": sheet_url,
             "sections": {
                 "property": has_property,

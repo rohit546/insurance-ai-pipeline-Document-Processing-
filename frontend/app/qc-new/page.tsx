@@ -16,14 +16,14 @@ export default function QCNewPage() {
   const [error, setError] = useState<string>("");
   const [results, setResults] = useState<any>(null);
   const [fetchingResults, setFetchingResults] = useState(false);
-  const [apiUrl, setApiUrl] = useState<string>('http://localhost:8000');
+  const [apiUrl, setApiUrl] = useState<string>('https://insurance-ai-pipeline-document-processing-production.up.railway.app');
 
   // Set API URL on client side only (works for both local and Vercel)
   useEffect(() => {
     const isVercel = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
     const url = isVercel
-      ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
-      : 'http://localhost:8000';
+      ? (process.env.NEXT_PUBLIC_API_URL || 'https://insurance-ai-pipeline-document-processing-production.up.railway.app')
+      : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
     setApiUrl(url);
   }, []);
 

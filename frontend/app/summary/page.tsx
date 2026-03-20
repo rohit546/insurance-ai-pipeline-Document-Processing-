@@ -35,7 +35,7 @@ export default function SummaryPage() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploadError, setUploadError] = useState<string>('');
-  const [apiUrl, setApiUrl] = useState<string>('http://localhost:8000');
+  const [apiUrl, setApiUrl] = useState<string>('https://insurance-ai-pipeline-document-processing-production.up.railway.app');
   const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
@@ -53,8 +53,8 @@ export default function SummaryPage() {
   useEffect(() => {
     const isVercel = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
     const url = isVercel
-      ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
-      : 'http://localhost:8000';
+      ? (process.env.NEXT_PUBLIC_API_URL || 'https://insurance-ai-pipeline-document-processing-production.up.railway.app')
+      : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
     setApiUrl(url);
   }, []);
 

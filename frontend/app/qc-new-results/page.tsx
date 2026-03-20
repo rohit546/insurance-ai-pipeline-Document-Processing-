@@ -20,8 +20,8 @@ function QCNewResultsContent() {
   useEffect(() => {
     const isVercel = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
     const url = isVercel
-      ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
-      : 'http://localhost:8000';
+      ? (process.env.NEXT_PUBLIC_API_URL || 'https://insurance-ai-pipeline-document-processing-production.up.railway.app')
+      : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
     console.log(`[QC Results] API URL set to: ${url} (isVercel: ${isVercel})`);
     setApiUrl(url);
   }, []);

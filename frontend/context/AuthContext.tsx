@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 
 interface User {
-  username: string;
+  username: string;  // Display name (email used as username)
 }
 
 interface AuthContextType {
@@ -58,8 +58,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       // Use environment variable if set, otherwise use default Railway URL
       const apiUrl = isProduction
-        ? (process.env.NEXT_PUBLIC_API_URL || 'https://deployment-production-7739.up.railway.app')
-        : 'http://localhost:8000';
+        ? (process.env.NEXT_PUBLIC_API_URL || 'https://insurance-ai-pipeline-document-processing-production.up.railway.app')
+        : 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
       
       // Debug logging (only in development)
       if (!isProduction) {
@@ -68,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       return apiUrl;
     }
-    return 'http://localhost:8000';
+    return 'https://insurance-ai-pipeline-document-processing-production.up.railway.app';
   };
 
   const login = async (username: string, password: string) => {
@@ -81,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log('[Auth] Attempting login to:', loginUrl);
       
       const formData = new FormData();
-      formData.append('username', username);
+      formData.append('email', username);
       formData.append('password', password);
 
       const controller = new AbortController();
@@ -112,7 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const data = await response.json();
-      const userData = { username: data.username };
+      const userData = { username: data.email || username };
 
       setUser(userData);
       setIsLoggedIn(true);
@@ -135,7 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const apiUrl = getApiUrl();
       const formData = new FormData();
-      formData.append('username', username);
+      formData.append('email', username);
       formData.append('password', password);
 
       const controller = new AbortController();
@@ -164,7 +164,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const data = await response.json();
-      const userData = { username: data.username };
+      const userData = { username: data.email || username };
 
       setUser(userData);
       setIsLoggedIn(true);
