@@ -669,7 +669,7 @@ gs://deployment/
 ### 12.1 External Dependencies
 
 **APIs:**
-- **NanoNets OCR** - OCR processing (API key: `bdee3d34-b8db-11f0-bd7c-dece98018c81`)
+- **NanoNets OCR** - OCR processing (API key via env `NANONETS_API_KEY`)
 - **OpenAI GPT** - LLM field extraction
 - **Google Cloud Storage** - File storage
 - **Google Sheets API** - Data export

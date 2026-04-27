@@ -12,7 +12,7 @@ import re
 import time
 import tempfile
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from google.cloud import storage
 from joblib import Parallel, delayed
 
@@ -23,8 +23,21 @@ BUCKET_NAME = os.getenv('BUCKET_NAME', 'mckinneysuite')
 PDF_FOLDER = 'pdf'
 METADATA_FILE = f'{PDF_FOLDER}/uploads_metadata.json'
 
-# Initialize NanoNets OCR extractor
-EXTRACTOR = DocumentExtractor(api_key="bdee3d34-b8db-11f0-bd7c-dece98018c81", model="nanonets-ocr-s")
+# NanoNets credentials must come from the environment (never commit keys to git).
+_nanonets_extractor: Optional[DocumentExtractor] = None
+
+
+def _get_nanonets_extractor() -> DocumentExtractor:
+    global _nanonets_extractor
+    if _nanonets_extractor is None:
+        api_key = os.getenv("NANONETS_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError(
+                "NANONETS_API_KEY is not set. Add it in Railway (or .env) with your NanoNets API key."
+            )
+        model = (os.getenv("NANONETS_OCR_MODEL", "nanonets-ocr-s") or "nanonets-ocr-s").strip()
+        _nanonets_extractor = DocumentExtractor(api_key=api_key, model=model)
+    return _nanonets_extractor
 
 
 def _get_bucket() -> storage.bucket.Bucket:
@@ -151,7 +164,7 @@ def extract_with_nanonets_ocr(pdf_bytes: bytes, page_num: int) -> Dict[str, Any]
         
         try:
             # Extract text using NanoNets
-            result = EXTRACTOR.extract(temp_image_path)
+            result = _get_nanonets_extractor().extract(temp_image_path)
             
             # Wait a bit for processing (especially for larger pages)
             time.sleep(1)
